@@ -76,8 +76,13 @@ class DatasetView(IterableDataset):
             if cache_root is None:
                 cache_root = Path.home() / ".cache" / "neko-data" / self.manifest.dataset_id
             if storage is None:
-                from ..storage import LocalStorage, S3Storage, is_local_path
-                storage = LocalStorage() if is_local_path(loaded.base_uri) else S3Storage()
+                from ..storage import HTTPStorage, LocalStorage, S3Storage, is_local_path
+                if is_local_path(loaded.base_uri):
+                    storage = LocalStorage()
+                elif loaded.base_uri.startswith(("http://", "https://")):
+                    storage = HTTPStorage()
+                else:
+                    storage = S3Storage()
             self.cache = DiskShardCache(
                 cache_root,
                 storage,

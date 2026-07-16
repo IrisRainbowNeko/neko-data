@@ -29,6 +29,7 @@ class BuildJob:
     shard_pattern: str = "{split}-{index:06d}.tar"
     start_index: int = 0
     resume: bool = False
+    skip_invalid_samples: bool = True
     overwrite: bool = False
     publisher: DatasetPublisher | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -83,6 +84,7 @@ class BuildJob:
             shard_pattern=build.get("shard_pattern", "{split}-{index:06d}.tar"),
             start_index=int(build.get("start_index", 0)),
             resume=bool(build.get("resume", False)),
+            skip_invalid_samples=bool(build.get("skip_invalid_samples", True)),
             overwrite=bool(build.get("overwrite", False)),
             publisher=publisher,
             metadata=dict(dataset.get("metadata", {})),
@@ -133,22 +135,34 @@ def build_dataset(job: BuildJob) -> DatasetManifest:
         max_samples_per_shard=job.max_samples_per_shard,
         pattern=job.shard_pattern,
         start_index=next_index,
-        overwrite=job.overwrite,
+        overwrite=job.overwrite or job.resume,
         on_shard=on_shard,
     )
     skipped = completed_samples
     total_samples = completed_samples
     error_path = reports_dir / "errors.jsonl"
     error_mode = "a" if job.resume and not job.overwrite else "w"
+    source_iterator = iter(job.source)
     with error_path.open(error_mode, encoding="utf-8") as errors:
-        for sample in job.source:
+        while True:
+            try:
+                sample = next(source_iterator)
+            except StopIteration:
+                break
+            except (TypeError, ValueError, UnicodeError) as exc:
+                if not job.skip_invalid_samples:
+                    raise
+                errors.write(json.dumps({"sample_key": None, "error": str(exc)}, ensure_ascii=False) + "\n")
+                continue
             if skipped:
                 skipped -= 1
                 continue
             try:
                 writer.add(sample)
                 total_samples += 1
-            except Exception as exc:
+            except (TypeError, ValueError, UnicodeError) as exc:
+                if not job.skip_invalid_samples:
+                    raise
                 errors.write(json.dumps({
                     "sample_key": getattr(sample, "sample_key", None),
                     "error": str(exc),

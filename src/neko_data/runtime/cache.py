@@ -93,6 +93,9 @@ class DiskShardCache:
         lease.touch()
         return lease
 
+    def _has_lease(self, path: Path) -> bool:
+        return any(self.objects.glob(f".{path.name}.lease.*"))
+
     def _evict(self) -> None:
         entries = [
             path for path in self.objects.iterdir()
@@ -106,12 +109,16 @@ class DiskShardCache:
         for path in sorted(entries, key=lambda item: item.stat().st_atime):
             if total <= self.evict_size_bytes:
                 break
-            try:
-                size = path.stat().st_size
-                path.unlink()
-                total -= size
-            except FileNotFoundError:
-                continue
+            with self._lock(path):
+                if self._has_lease(path):
+                    continue
+                try:
+                    size = path.stat().st_size
+                    path.unlink()
+                    self._verified_marker(path).unlink(missing_ok=True)
+                    total -= size
+                except FileNotFoundError:
+                    continue
 
     def _download(self, uri: str, path: Path, shard: ShardRecord | None) -> None:
         partial = path.with_name(f".{path.name}.partial.{os.getpid()}.{uuid.uuid4().hex}")
@@ -135,6 +142,7 @@ class DiskShardCache:
         key = self._key(uri, shard)
         path = self.objects / f"{key}.tar"
         lock = self._lock(path)
+        downloaded = False
         if getattr(lock, "is_locked", False):
             self.stats.waits += 1
         with lock:
@@ -143,6 +151,7 @@ class DiskShardCache:
             else:
                 try:
                     self._download(uri, path, shard)
+                    downloaded = True
                 except Exception:
                     self.stats.errors += 1
                     raise
@@ -153,7 +162,8 @@ class DiskShardCache:
             yield path
         finally:
             lease.unlink(missing_ok=True)
-            self._evict()
+            if downloaded:
+                self._evict()
 
     @contextmanager
     def open(self, uri: str, shard: ShardRecord | None = None):

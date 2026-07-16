@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "neko-data"
-version = "0.1.0"
+version = "0.1.1"
 description = "Streaming WebDataset and metadata tooling for diffusion model training."
 readme = "README.md"
 requires-python = ">=3.10"

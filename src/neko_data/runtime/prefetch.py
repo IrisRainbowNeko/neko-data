@@ -13,6 +13,8 @@ class ShardPrefetcher:
         self.pending: dict[str, Future] = {}
 
     def schedule(self, uri: str, shard) -> None:
+        for completed_uri in [key for key, future in self.pending.items() if future.done()]:
+            del self.pending[completed_uri]
         if len(self.pending) >= self.max_pending or uri in self.pending:
             return
         self.pending[uri] = self.executor.submit(self._ensure, uri, shard)

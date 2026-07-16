@@ -26,6 +26,7 @@ metadata_provider:
 
 build:
   resume: false
+  skip_invalid_samples: true
   max_shard_size: "1GiB"
   max_samples_per_shard: 0
   shard_pattern: "{split}-{index:06d}.tar"

@@ -27,6 +27,8 @@ pip install -e '.[hf,r2,duckdb,rainbow]'
 
 `hf`, `r2`, and `rainbow` are optional. Local WebDataset reading and Parquet
 metadata do not require boto3 or the `webdataset` Python package.
+Public HTTP manifests and shards use `HTTPStorage` automatically; the `hf`
+extra provides its `requests` dependency.
 
 ## Build
 

@@ -30,3 +30,17 @@ def test_planner_changes_order_each_epoch():
     second = [item.sha256 for item in planner.plan(1, RuntimeContext())]
     assert first != second
 
+
+def test_planner_covers_each_shard_once_across_workers_per_epoch():
+    shards = _shards(24)
+    planner = ShardPlanner(shards, seed=10)
+    expected = {str(index) for index in range(24)}
+    for epoch in (0, 1):
+        assignments = []
+        for worker_id in range(3):
+            context = RuntimeContext(worker_id=worker_id, num_workers=3)
+            assignments.extend(planner.plan(epoch, context))
+        values = [item.sha256 for item in assignments]
+        assert len(values) == len(set(values))
+        assert set(values) == expected
+

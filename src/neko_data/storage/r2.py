@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import io
 import os
+from contextlib import contextmanager
 from pathlib import Path
-from typing import BinaryIO
 from urllib.parse import urlparse
 
 
@@ -50,10 +50,15 @@ class S3Storage:
             self._client = session.client("s3", **client_kwargs)
         return self._client
 
-    def open(self, uri: str) -> BinaryIO:
+    @contextmanager
+    def open(self, uri: str):
         bucket, key = _split_s3_uri(uri)
         response = self.client.get_object(Bucket=bucket, Key=key)
-        return response["Body"]
+        body = response["Body"]
+        try:
+            yield body
+        finally:
+            body.close()
 
     def download(self, uri: str, destination: Path) -> None:
         bucket, key = _split_s3_uri(uri)

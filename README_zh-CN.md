@@ -23,6 +23,8 @@ pip install -e '.[hf,r2,duckdb,rainbow]'
 
 `hf`、`r2`、`rainbow` 都是可选依赖。本地 tar 读取和 Parquet metadata 不需要 boto3，也不
 要求训练环境安装 `webdataset` 包。
+公开 HTTP manifest 和 shard 会自动使用 `HTTPStorage`；安装 `hf` extra 即可提供它所需的
+`requests` 依赖。
 
 ## 构建
 

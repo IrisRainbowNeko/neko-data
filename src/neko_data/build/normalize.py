@@ -154,6 +154,7 @@ def sample_from_mapping(
     split: str = "train",
     source_id: str = "hf-dataset",
     metadata_provider: Mapping[str, Any] | None = None,
+    image_root: str | os.PathLike[str] | None = None,
 ) -> NormalizedSample:
     image_value = row.get(image_column)
     image_name: str | None = None
@@ -166,12 +167,18 @@ def sample_from_mapping(
         image_name = image_value.get("path")
         image = image_value.get("bytes")
         if image is None and image_name:
-            image = Path(image_name).read_bytes()
+            image_path = Path(image_name)
+            if image_root is not None and not image_path.is_absolute():
+                image_path = Path(image_root) / image_path
+            image = image_path.read_bytes()
     elif isinstance(image_value, (bytes, bytearray, memoryview)):
         image = bytes(image_value)
     elif isinstance(image_value, (str, os.PathLike)):
         image_name = os.fspath(image_value)
-        image = Path(image_name).read_bytes()
+        image_path = Path(image_name)
+        if image_root is not None and not image_path.is_absolute():
+            image_path = Path(image_root) / image_path
+        image = image_path.read_bytes()
     else:
         raise TypeError(f"Unsupported image value in column {image_column!r}: {type(image_value).__name__}")
 
@@ -187,7 +194,12 @@ def sample_from_mapping(
     }
     _merge_provider(captions, metadata, metadata_provider)
     width, height = image_size(image)
-    key_value = row.get(key_column) if key_column else row.get("id") or row.get("key")
+    if key_column:
+        key_value = row.get(key_column)
+    elif "id" in row:
+        key_value = row["id"]
+    else:
+        key_value = row.get("key")
     if key_value is None:
         raise ValueError("A sample key is required: configure key_column or provide id/key")
     return NormalizedSample(

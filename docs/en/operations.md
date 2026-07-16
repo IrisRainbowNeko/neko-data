@@ -19,3 +19,23 @@ is an acceptable outage fallback, and `disabled` only for debugging. A
 manifest is immutable once published; make a new dataset version for changed
 captions, filters, or images.
 
+## Resume and error handling
+
+Set `build.resume: true` only when the input stream is stable and replayable.
+The build journal contains finalized shards; resume replays the source and
+skips the samples already represented by that journal. Do not resume against a
+source whose ordering or filtering changed.
+
+`skip_invalid_samples: true` records `TypeError`, `ValueError`, and
+`UnicodeError` from sample normalization in `reports/errors.jsonl` and keeps
+building. Publisher failures and storage/network I/O errors remain fatal. Use
+`overwrite: true` for an intentional rebuild instead of mixing old records
+with a changed source.
+
+## HTTP fallback
+
+Public `http://` and `https://` manifests and shards are supported through
+`HTTPStorage`; it is selected automatically when no storage object is passed.
+HTTP reads are streamed, and the normal cache still downloads whole assigned
+tar shards before training. This is useful for public mirrors; for private R2,
+use `s3://` with the `r2` extra and credentials from the environment.

@@ -8,7 +8,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from ..contract.schema import DatasetManifest, ShardRecord
-from ..storage import S3Storage, is_local_path
+from ..storage import HTTPStorage, S3Storage, is_local_path
 
 
 @dataclass(frozen=True)
@@ -37,13 +37,9 @@ class ManifestLoader:
             with storage.open(value) as file:
                 data = json.load(file)
         elif parsed.scheme in {"http", "https"}:
-            try:
-                import requests
-            except ImportError as exc:
-                raise RuntimeError("HTTP manifest loading requires requests") from exc
-            response = requests.get(value, timeout=60)
-            response.raise_for_status()
-            data = response.json()
+            storage = self.storage or HTTPStorage()
+            with storage.open(value) as file:
+                data = json.load(file)
         else:
             raise ValueError(f"Unsupported manifest URI: {value!r}")
         base = value.rsplit("/", 1)[0]
