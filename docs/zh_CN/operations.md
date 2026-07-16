@@ -25,6 +25,19 @@ streaming HTTP 请求，使用 `tarfile.open(..., mode="r|*")` 处理。Hub 输�
 `caption_columns`。实现依赖 `datasets.load_dataset(..., streaming=True)`；如果数据集
 返回图片路径而非 bytes，只有当前样本的路径会被读取。
 
+```yaml
+source:
+  type: hf_dataset
+  path: your-org/your-dataset
+  split: train
+  image_column: image
+  key_column: id
+  caption_columns: [caption, tags, regular_summary]
+  # image_root: /data/relative-image-root
+```
+
+`image_root` 只在 HF 行返回相对图片路径时需要；图片 bytes 或 PIL Image 会直接处理。
+
 ## DuckDB join
 
 ```yaml

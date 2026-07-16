@@ -1,6 +1,7 @@
 import io
 import json
 import tarfile
+from contextlib import contextmanager
 
 from neko_data.build.source_hf_webdataset import HFWebDatasetSource
 
@@ -29,3 +30,24 @@ def test_hf_webdataset_source_reads_local_tar_as_stream(sample_image_bytes, tmp_
     assert samples[0].caption == "default caption"
     assert samples[0].width == 32
 
+def test_hf_webdataset_source_accepts_non_seekable_hub_stream(sample_image_bytes, tmp_path):
+    tar_path = tmp_path / "input.tar"
+    _make_tar(tar_path, sample_image_bytes)
+    tar_bytes = tar_path.read_bytes()
+
+    class NonSeekableStream(io.BytesIO):
+        def seekable(self):
+            return False
+
+        def seek(self, *args, **kwargs):
+            raise io.UnsupportedOperation("stream is not seekable")
+
+    class StreamingSource(HFWebDatasetSource):
+        @contextmanager
+        def open_file(self, path):
+            yield NonSeekableStream(tar_bytes)
+
+    samples = list(StreamingSource(input_files=["hub/sample.tar"], split="train", source_id="hub"))
+    assert len(samples) == 1
+    assert samples[0].sample_key == "42"
+    assert samples[0].caption == "default caption"

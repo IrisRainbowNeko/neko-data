@@ -4,6 +4,7 @@ import pyarrow.parquet as pq
 
 from neko_data.build.job import BuildJob, build_dataset
 from neko_data.contract.records import NormalizedSample
+from neko_data.integrations.rainbow import RainbowTextImageSource
 from neko_data.runtime import RuntimeContext, open_dataset
 
 
@@ -41,3 +42,33 @@ def test_build_and_read_local_dataset(tmp_path: Path, sample_image_bytes: bytes)
     assert view.get_image_size(rows[0]) == (32, 16)
     assert pq.read_table(root / "metadata/train/train-000000.parquet").num_rows == 2
 
+
+def test_rainbow_adapter_returns_training_source(
+    tmp_path: Path, sample_image_bytes: bytes
+):
+    root = tmp_path / "dataset"
+    build_dataset(
+        BuildJob(
+            source=[
+                NormalizedSample(
+                    "sample",
+                    sample_image_bytes,
+                    caption="a caption",
+                    width=32,
+                    height=16,
+                )
+            ],
+            output_dir=root,
+            dataset_id="fixture",
+            version="v1",
+        )
+    )
+    source = RainbowTextImageSource.from_manifest(
+        root / "manifest.json",
+        cache_root=tmp_path / "cache",
+        sample_shuffle=0,
+    )
+    row = next(iter(source))
+    assert row["id"] == "sample"
+    assert row["image"] == sample_image_bytes
+    assert row["prompt"]["caption"] == "a caption"

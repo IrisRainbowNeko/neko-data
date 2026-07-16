@@ -9,6 +9,19 @@ HTTP request and `tarfile.open(mode="r|*")`. A normal HF source uses
 `load_dataset(..., streaming=True)`. A `DuckDBMetadataProvider` joins by the
 sample key during build; it is not opened by the training reader.
 
+For a regular non-WebDataset HF dataset, configure the streaming source:
+
+```yaml
+source:
+  type: hf_dataset
+  path: your-org/your-dataset
+  split: train
+  image_column: image
+  key_column: id
+  caption_columns: [caption, tags, regular_summary]
+  # image_root: /data/relative-image-root
+```
+
 Use one cache directory visible to every rank on a node, preferably on local
 NVMe. Configure approximately 420 GiB maximum and 350 GiB eviction target on
 a 500 GiB machine. The cache verifies downloaded size and SHA-256, atomically
