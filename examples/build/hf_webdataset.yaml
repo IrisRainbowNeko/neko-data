@@ -1,0 +1,40 @@
+dataset:
+  dataset_id: "danbooru-unified"
+  version: "2026-07-16-v1"
+  output_dir: "/data/datasets/danbooru-unified/2026-07-16-v1"
+  split: "train"
+  metadata:
+    image_policy: "one-copy-in-tar"
+    metadata_policy: "joined-json-and-parquet"
+
+source:
+  type: "hf_webdataset"
+  repo_id: "your-org/your-webdataset"
+  repo_type: "dataset"
+  revision: "main"
+  endpoint: "https://huggingface.co"
+  include: ["*.tar"]
+  split: "train"
+  source_id: "your-org/your-webdataset"
+
+# The join runs once while building. It is never queried from R2 during training.
+metadata_provider:
+  type: "duckdb"
+  path: "/data/labels/tags+captions.duckdb"
+  table: "data"
+  index_key: "id"
+
+build:
+  resume: false
+  max_shard_size: "1GiB"
+  max_samples_per_shard: 0
+  shard_pattern: "{split}-{index:06d}.tar"
+  overwrite: false
+
+# Set this to an s3://bucket/prefix for R2. Credentials come from the normal
+# AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY environment variables.
+# publish:
+#   destination: "s3://bucket/datasets/danbooru-unified/2026-07-16-v1"
+#   delete_after_upload: true
+#   upload_concurrency: 8
+

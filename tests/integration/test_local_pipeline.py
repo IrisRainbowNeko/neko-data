@@ -1,0 +1,43 @@
+from pathlib import Path
+
+import pyarrow.parquet as pq
+
+from neko_data.build.job import BuildJob, build_dataset
+from neko_data.contract.records import NormalizedSample
+from neko_data.runtime import RuntimeContext, open_dataset
+
+
+def test_build_and_read_local_dataset(tmp_path: Path, sample_image_bytes: bytes):
+    samples = [
+        NormalizedSample(
+            sample_key=f"sample-{index}",
+            image=sample_image_bytes,
+            source_id="fixture",
+            caption=f"caption {index}",
+            captions={"tags": f"tag_{index}"},
+            metadata={"row_id": index},
+            width=32,
+            height=16,
+        )
+        for index in range(5)
+    ]
+    root = tmp_path / "dataset"
+    manifest = build_dataset(BuildJob(
+        source=samples,
+        output_dir=root,
+        dataset_id="fixture",
+        version="v1",
+        max_shard_size="1MiB",
+        max_samples_per_shard=2,
+    ))
+    assert manifest.splits == {"train": 5}
+    assert len(manifest.shards) == 3
+    view = open_dataset(root / "manifest.json", RuntimeContext(), cache_root=tmp_path / "cache",
+                        prompt_template="{caption}", sample_shuffle=0)
+    rows = list(view)
+    assert {row["id"] for row in rows} == {f"sample-{index}" for index in range(5)}
+    assert {row["prompt"]["caption"] for row in rows} == {f"caption {index}" for index in range(5)}
+    assert rows[0]["metadata"]["width"] == 32
+    assert view.get_image_size(rows[0]) == (32, 16)
+    assert pq.read_table(root / "metadata/train/train-000000.parquet").num_rows == 2
+
