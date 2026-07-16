@@ -63,7 +63,9 @@ class HFDatasetsSource:
     def __iter__(self) -> Iterator[NormalizedSample]:
         for row in self._dataset():
             key = row.get(self.key_column) if self.key_column else row.get("id") or row.get("key")
-            provider_data = self.metadata_provider.lookup(str(key)) if self.metadata_provider is not None and key is not None else None
+            provider_data = None
+            if self.metadata_provider is not None and key is not None:
+                provider_data = self.metadata_provider.lookup(str(key))
             yield sample_from_mapping(
                 row,
                 image_column=self.image_column,

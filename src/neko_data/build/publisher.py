@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from urllib.parse import urlparse
 
 from ..contract.schema import ShardRecord
 from ..storage import LocalStorage, S3Storage, is_local_path, local_path_from_uri

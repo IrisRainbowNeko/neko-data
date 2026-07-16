@@ -111,7 +111,11 @@ def build_dataset(job: BuildJob) -> DatasetManifest:
     completed_samples = sum(record.num_samples for record in previous_records)
     next_index = job.start_index
     if previous_records:
-        next_index = max(next_index, max((record.index if record.index is not None else -1) for record in previous_records) + 1)
+        last_index = max(
+            record.index if record.index is not None else -1
+            for record in previous_records
+        )
+        next_index = max(next_index, last_index + 1)
 
     def on_shard(record, tar_path, metadata_path):
         if job.publisher is not None:

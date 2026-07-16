@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import copy
 import fnmatch
 import inspect
 import os
@@ -10,7 +9,7 @@ import tarfile
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import BinaryIO, Iterable, Iterator, Mapping
+from typing import BinaryIO, Iterable, Iterator
 
 from ..contract.records import NormalizedSample
 from .normalize import IMAGE_EXTENSIONS, sample_from_wds_parts
