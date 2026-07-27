@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import fnmatch
 import inspect
+import logging
 import os
 import tarfile
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,6 +15,28 @@ from typing import BinaryIO, Iterable, Iterator
 
 from ..contract.records import NormalizedSample
 from .normalize import IMAGE_EXTENSIONS, sample_from_wds_parts
+
+LOGGER = logging.getLogger(__name__)
+
+
+def _retryable_stream_errors() -> tuple[type[BaseException], ...]:
+    errors: list[type[BaseException]] = [OSError, EOFError, tarfile.ReadError]
+    try:
+        import requests
+
+        errors.append(requests.exceptions.RequestException)
+    except ImportError:
+        pass
+    try:
+        import urllib3
+
+        for name in ("ProtocolError", "IncompleteRead"):
+            error_type = getattr(urllib3.exceptions, name, None)
+            if error_type is not None:
+                errors.append(error_type)
+    except ImportError:
+        pass
+    return tuple(errors)
 
 
 def sample_key(member_name: str) -> str:
@@ -106,6 +130,8 @@ class HFWebDatasetSource:
         input_files: Iterable[str] | None = None,
         include: Iterable[str] = ("*.tar",),
         exclude: Iterable[str] = (),
+        max_retries: int = 5,
+        retry_backoff: float = 5.0,
         path_prefix: str = "",
         split: str = "train",
         source_id: str | None = None,
@@ -123,6 +149,8 @@ class HFWebDatasetSource:
         self.input_files = list(input_files) if input_files is not None else None
         self.include = tuple(include)
         self.exclude = tuple(exclude)
+        self.max_retries = max(0, max_retries)
+        self.retry_backoff = max(0.0, retry_backoff)
         self.path_prefix = path_prefix.strip("/")
         self.split = split
         self.source_id = source_id or repo_id or "hf-webdataset"
@@ -188,16 +216,45 @@ class HFWebDatasetSource:
         files = self.list_files()
         if not files:
             raise RuntimeError("No WebDataset tar files matched the configured Hub source")
+        retryable_errors = _retryable_stream_errors()
         for path in files:
             source = f"{self.source_id}:{path}"
-            with self.open_file(path) as fileobj:
-                yield from normalized_samples_from_tar(
-                    fileobj,
-                    split=self.split,
-                    source_id=source,
-                    metadata_provider=self.metadata_provider,
-                    caption_keys=self.caption_keys,
-                )
+            emitted_from_file = 0
+            skip_samples = 0
+            retries = 0
+            while True:
+                try:
+                    with self.open_file(path) as fileobj:
+                        for sample in normalized_samples_from_tar(
+                            fileobj,
+                            split=self.split,
+                            source_id=source,
+                            metadata_provider=self.metadata_provider,
+                            caption_keys=self.caption_keys,
+                        ):
+                            if skip_samples:
+                                skip_samples -= 1
+                                continue
+                            emitted_from_file += 1
+                            yield sample
+                    break
+                except retryable_errors as exc:
+                    if retries >= self.max_retries:
+                        raise
+                    retries += 1
+                    delay = min(self.retry_backoff * (2 ** (retries - 1)), 60.0)
+                    LOGGER.warning(
+                        "Retrying %s after %d samples; retry %d/%d in %.1fs: %s",
+                        source,
+                        emitted_from_file,
+                        retries,
+                        self.max_retries,
+                        delay,
+                        exc,
+                    )
+                    skip_samples = emitted_from_file
+                    if delay:
+                        time.sleep(delay)
 
     def __len__(self) -> int:
         raise TypeError("HFWebDatasetSource is streaming and has no implicit length")

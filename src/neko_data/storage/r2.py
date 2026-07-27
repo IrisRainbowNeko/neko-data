@@ -28,11 +28,13 @@ class S3Storage:
         endpoint_url: str | None = None,
         region_name: str = "auto",
         profile: str | None = None,
+        enable_multipart: bool | None = None,
         client=None,
     ) -> None:
         self.endpoint_url = endpoint_url or os.environ.get("R2_ENDPOINT") or os.environ.get("S3_ENDPOINT_URL")
         self.region_name = region_name
         self.profile = profile
+        self.enable_multipart = enable_multipart
         self._client = client
 
     @property
@@ -65,8 +67,28 @@ class S3Storage:
         destination.parent.mkdir(parents=True, exist_ok=True)
         self.client.download_file(bucket, key, str(destination))
 
-    def upload_file(self, source: Path, uri: str, max_concurrency: int = 8) -> None:
+    def upload_file(
+        self,
+        source: Path,
+        uri: str,
+        max_concurrency: int = 8,
+        *,
+        enable_multipart: bool | None = None,
+    ) -> None:
         bucket, key = _split_s3_uri(uri)
+        multipart = self.enable_multipart if enable_multipart is None else enable_multipart
+        if multipart is None:
+            value = os.environ.get("R2_ENABLE_MULTIPART") or os.environ.get("S3_ENABLE_MULTIPART")
+            multipart = value is None or value.strip().lower() not in {"0", "false", "no", "off"}
+        if not multipart:
+            with source.open("rb") as body:
+                self.client.put_object(
+                    Bucket=bucket,
+                    Key=key,
+                    Body=body,
+                    ContentLength=source.stat().st_size,
+                )
+            return
         try:
             from boto3.s3.transfer import TransferConfig
         except ImportError as exc:

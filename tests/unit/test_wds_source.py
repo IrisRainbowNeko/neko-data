@@ -51,3 +51,39 @@ def test_hf_webdataset_source_accepts_non_seekable_hub_stream(sample_image_bytes
     assert len(samples) == 1
     assert samples[0].sample_key == "42"
     assert samples[0].caption == "default caption"
+
+
+def test_hf_webdataset_source_retries_transient_stream(sample_image_bytes, tmp_path):
+    tar_path = tmp_path / "input.tar"
+    _make_tar(tar_path, sample_image_bytes)
+
+    class FailingStream(io.BytesIO):
+        def read(self, *args, **kwargs):
+            raise OSError("temporary stream failure")
+
+    class NonSeekableStream(io.BytesIO):
+        def seekable(self):
+            return False
+
+        def seek(self, *args, **kwargs):
+            raise io.UnsupportedOperation("stream is not seekable")
+
+    class RetryingSource(HFWebDatasetSource):
+        opens = 0
+        retry_tar = tar_path.read_bytes()
+
+
+        @contextmanager
+        def open_file(self, path):
+            self.opens += 1
+            if self.opens == 1:
+                yield FailingStream()
+            else:
+                yield NonSeekableStream(self.retry_tar)
+
+    source = RetryingSource(input_files=["hub/sample.tar"], max_retries=1, retry_backoff=0)
+    samples = list(source)
+    assert len(samples) == 1
+    assert source.opens == 2
+    assert samples[0].sample_key == "42"
+    assert samples[0].caption == "default caption"

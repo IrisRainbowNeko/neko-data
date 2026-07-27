@@ -23,6 +23,8 @@ class Client:
     def __init__(self):
         self.body = Body(b"manifest")
         self.download_calls = []
+        self.put_body = None
+        self.put_kwargs = None
 
     def get_object(self, **kwargs):
         self.get_kwargs = kwargs
@@ -31,6 +33,11 @@ class Client:
     def download_file(self, bucket, key, destination):
         self.download_calls.append((bucket, key, destination))
         Path(destination).write_bytes(b"download")
+
+
+    def put_object(self, **kwargs):
+        self.put_kwargs = {key: value for key, value in kwargs.items() if key != "Body"}
+        self.put_body = kwargs["Body"].read()
 
     def head_object(self, **kwargs):
         return {"ContentLength": 8}
@@ -47,6 +54,21 @@ def test_s3_storage_manages_stream_body_and_object_paths(tmp_path):
     assert destination.read_bytes() == b"download"
     assert storage.head("s3://bucket/path/file")["size_bytes"] == 8
 
+
+def test_s3_storage_can_use_single_put(tmp_path):
+    client = Client()
+    source = tmp_path / "shard.tar"
+    source.write_bytes(b"tar payload")
+    storage = S3Storage(client=client, enable_multipart=False)
+
+    storage.upload_file(source, "s3://bucket/path/shard.tar")
+
+    assert client.put_kwargs == {
+        "Bucket": "bucket",
+        "Key": "path/shard.tar",
+        "ContentLength": len(b"tar payload"),
+    }
+    assert client.put_body == b"tar payload"
 
 class Response:
     def __init__(self, data: bytes):
