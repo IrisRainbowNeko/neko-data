@@ -1,4 +1,3 @@
-from .rainbow import RainbowTextImageSource, RainbowWebDatasetSource
+from .rainbow import RainbowTextImageSource, RainbowWebDatasetImageSource, RainbowWebDatasetSource
 
-__all__ = ["RainbowTextImageSource", "RainbowWebDatasetSource"]
-
+__all__ = ["RainbowTextImageSource", "RainbowWebDatasetImageSource", "RainbowWebDatasetSource"]

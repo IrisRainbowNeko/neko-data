@@ -1,11 +1,15 @@
-"""Optional RainbowNeko Engine adapter."""
+"""Optional RainbowNeko Engine adapters."""
 
 from __future__ import annotations
 
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
+from PIL import Image
+
 from ..runtime import DatasetView, RuntimeContext, open_dataset
+from ..storage import S3Storage
 
 try:
     from rainbowneko.data.source.base import DataSource as _RainbowDataSource
@@ -51,3 +55,34 @@ class RainbowTextImageSource(RainbowWebDatasetSource):
     ) -> "RainbowTextImageSource":
         return cls(open_dataset(manifest_uri, runtime=runtime, **kwargs))
 
+
+class RainbowWebDatasetImageSource(RainbowWebDatasetSource):
+    """Manifest-backed equivalent of RainbowNeko's WebDatasetImageSource."""
+
+    def __iter__(self):
+        for data in self.dataset:
+            image = Image.open(BytesIO(data["image"]))
+            yield {"id": data["id"], "image": image}
+
+    def get_image_size(self, data: dict[str, Any]) -> tuple[int, int]:
+        return data["image"].size
+
+    @classmethod
+    def from_manifest(
+        cls,
+        manifest_uri: str | Path,
+        runtime: RuntimeContext | None = None,
+        *,
+        repeat: int = 1,
+        endpoint_url: str | None = None,
+        region_name: str = "auto",
+        **kwargs,
+    ) -> "RainbowWebDatasetImageSource":
+        kwargs.update({"output_mode": "image", "include_metadata": False})
+        if endpoint_url is not None and "storage" not in kwargs:
+            kwargs["storage"] = S3Storage(endpoint_url=endpoint_url, region_name=region_name)
+        context = runtime or RuntimeContext.from_env()
+        return cls(
+            open_dataset(manifest_uri, runtime=context, **kwargs),
+            repeat=repeat,
+        )

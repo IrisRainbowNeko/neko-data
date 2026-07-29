@@ -40,6 +40,13 @@ Use `publish.destination: s3://bucket/prefix` with an R2 endpoint configured
 through the normal boto3 environment variables. `delete_after_upload: true`
 lets a build host upload each finalized shard and release its local copy.
 
+## Mirror prebuilt shards
+
+Use `neko-data mirror --config mirror.yaml` to copy existing Hub WebDataset tar
+files without repacking them. The command is a read-only plan unless `--execute`
+is supplied; completed objects are resumable and checksum-verified. See
+[docs/en/mirroring.md](docs/en/mirroring.md).
+
 ## Train
 
 ```python

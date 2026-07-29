@@ -65,6 +65,7 @@ class DatasetView(IterableDataset):
         caption_key: str = "caption",
         prompt_template: str | Sequence[str] | None = None,
         include_metadata: bool = True,
+        output_mode: str = "text_image",
     ) -> None:
         self.loaded = loaded
         self.manifest = loaded.manifest
@@ -103,6 +104,9 @@ class DatasetView(IterableDataset):
             ]
         self.prompt_template = prompt_template
         self.include_metadata = include_metadata
+        if output_mode not in {"text_image", "image"}:
+            raise ValueError("output_mode must be text_image or image")
+        self.output_mode = output_mode
         self.epoch = 0
         self.planner = ShardPlanner(self.manifest.for_split(split), seed=seed)
 
@@ -140,6 +144,9 @@ class DatasetView(IterableDataset):
             samples = _shuffle_stream(samples, self.sample_shuffle, random.Random(self.seed + self.epoch))
             rng = random.Random(self.seed + self.epoch)
             for sample in samples:
+                if self.output_mode == "image":
+                    yield {"id": sample.sample_key, "image": sample.image}
+                    continue
                 yield sample.to_training_dict(
                     caption_key=self.caption_key,
                     prompt_template=self.prompt_template,

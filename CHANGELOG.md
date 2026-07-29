@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.0 - 2026-07-27
+
+- Add resumable, checksum-verified mirroring for prebuilt Hub WebDataset shards.
+- Add R2 object metadata validation and atomic final manifest publication.
+- Add automatic torchrun/SLURM runtime discovery and a Rainbow image-only source.
+
 ## 0.1.1 - 2026-07-16
 
 - Add public HTTP manifest and shard storage.

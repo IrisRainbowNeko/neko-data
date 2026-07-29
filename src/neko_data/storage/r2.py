@@ -6,6 +6,7 @@ import io
 import os
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Mapping
 from urllib.parse import urlparse
 
 
@@ -74,34 +75,63 @@ class S3Storage:
         max_concurrency: int = 8,
         *,
         enable_multipart: bool | None = None,
+        metadata: Mapping[str, str] | None = None,
     ) -> None:
         bucket, key = _split_s3_uri(uri)
         multipart = self.enable_multipart if enable_multipart is None else enable_multipart
+        object_metadata = {str(name): str(value) for name, value in (metadata or {}).items()}
         if multipart is None:
             value = os.environ.get("R2_ENABLE_MULTIPART") or os.environ.get("S3_ENABLE_MULTIPART")
             multipart = value is None or value.strip().lower() not in {"0", "false", "no", "off"}
         if not multipart:
+            request = {
+                "Bucket": bucket,
+                "Key": key,
+                "ContentLength": source.stat().st_size,
+            }
+            if object_metadata:
+                request["Metadata"] = object_metadata
             with source.open("rb") as body:
-                self.client.put_object(
-                    Bucket=bucket,
-                    Key=key,
-                    Body=body,
-                    ContentLength=source.stat().st_size,
-                )
+                self.client.put_object(Body=body, **request)
             return
         try:
             from boto3.s3.transfer import TransferConfig
         except ImportError as exc:
             raise RuntimeError("S3/R2 support requires boto3") from exc
         config = TransferConfig(max_concurrency=max_concurrency, use_threads=max_concurrency > 1)
-        self.client.upload_file(str(source), bucket, key, Config=config)
+        kwargs = {"Config": config}
+        if object_metadata:
+            kwargs["ExtraArgs"] = {"Metadata": object_metadata}
+        self.client.upload_file(str(source), bucket, key, **kwargs)
 
-    def upload_bytes(self, data: bytes, uri: str) -> None:
+    def upload_bytes(
+        self,
+        data: bytes,
+        uri: str,
+        *,
+        metadata: Mapping[str, str] | None = None,
+    ) -> None:
         bucket, key = _split_s3_uri(uri)
-        self.client.upload_fileobj(io.BytesIO(data), bucket, key)
+        object_metadata = {str(name): str(value) for name, value in (metadata or {}).items()}
+        if self.enable_multipart is False:
+            request = {"Bucket": bucket, "Key": key, "ContentLength": len(data)}
+            if object_metadata:
+                request["Metadata"] = object_metadata
+            self.client.put_object(Body=io.BytesIO(data), **request)
+            return
+        kwargs = {}
+        if object_metadata:
+            kwargs["ExtraArgs"] = {"Metadata": object_metadata}
+        self.client.upload_fileobj(io.BytesIO(data), bucket, key, **kwargs)
 
-    def head(self, uri: str) -> dict[str, int]:
+    def head(self, uri: str) -> dict[str, object]:
         bucket, key = _split_s3_uri(uri)
         response = self.client.head_object(Bucket=bucket, Key=key)
-        return {"size_bytes": int(response["ContentLength"])}
-
+        return {
+            "size_bytes": int(response["ContentLength"]),
+            "metadata": {
+                str(name).lower(): str(value)
+                for name, value in response.get("Metadata", {}).items()
+            },
+            "etag": str(response.get("ETag", "")).strip('"'),
+        }

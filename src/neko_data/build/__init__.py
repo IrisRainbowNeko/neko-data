@@ -1,5 +1,6 @@
 from .job import BuildJob, build_dataset
 from .metadata import DuckDBMetadataProvider, MetadataWriter
+from .mirror import MirrorJob, inspect_mirror, mirror_dataset, mirror_status
 from .normalize import sample_from_mapping, sample_from_wds_parts
 from .shard_writer import WebDatasetShardWriter
 from .shard_writer_stream import StreamingWebDatasetShardWriter
@@ -12,10 +13,13 @@ __all__ = [
     "HFDatasetsSource",
     "HFWebDatasetSource",
     "MetadataWriter",
+    "MirrorJob",
     "WebDatasetShardWriter",
     "StreamingWebDatasetShardWriter",
     "build_dataset",
+    "inspect_mirror",
+    "mirror_dataset",
+    "mirror_status",
     "sample_from_mapping",
     "sample_from_wds_parts",
 ]
-

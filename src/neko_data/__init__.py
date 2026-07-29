@@ -2,10 +2,15 @@
 
 from .build.job import BuildJob, build_dataset
 from .build.metadata import DuckDBMetadataProvider
+from .build.mirror import MirrorJob, inspect_mirror, mirror_dataset, mirror_status
 from .build.source_hf_dataset import HFDatasetsSource
 from .build.source_hf_webdataset import HFWebDatasetSource
 from .contract import DatasetManifest, NormalizedSample, ShardRecord
-from .integrations.rainbow import RainbowTextImageSource, RainbowWebDatasetSource
+from .integrations.rainbow import (
+    RainbowTextImageSource,
+    RainbowWebDatasetImageSource,
+    RainbowWebDatasetSource,
+)
 from .runtime import DatasetView, RuntimeContext, open_dataset
 
 __all__ = [
@@ -14,13 +19,17 @@ __all__ = [
     "DuckDBMetadataProvider",
     "HFDatasetsSource",
     "HFWebDatasetSource",
+    "MirrorJob",
     "RainbowTextImageSource",
+    "RainbowWebDatasetImageSource",
     "RainbowWebDatasetSource",
     "build_dataset",
+    "inspect_mirror",
+    "mirror_dataset",
+    "mirror_status",
     "DatasetView",
     "NormalizedSample",
     "RuntimeContext",
     "ShardRecord",
     "open_dataset",
 ]
-

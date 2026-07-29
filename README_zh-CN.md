@@ -36,6 +36,12 @@ neko-data build --config examples/build/hf_webdataset.yaml
 使用 boto3 的环境变量或 profile 配置，不把凭证写进代码和 manifest。`delete_after_upload: true`
 会在每个 shard 上传成功后删除构建机上的 tar，适合 500G 磁盘。
 
+## 原样镜像已有 WebDataset
+
+已有合适 tar shard 的 Hub 数据集使用 `neko-data mirror --config mirror.yaml`，无需逐样本
+解码或重打包。命令默认只做只读规划，添加 `--execute --resume` 后执行可恢复上传。详细配置
+和 DINO 图像训练接入见 [`docs/zh_CN/mirroring.md`](docs/zh_CN/mirroring.md)。
+
 ## 统一数据格式
 
 每条样本只保存一份图片：

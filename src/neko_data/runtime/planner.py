@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import os
 import random
 from dataclasses import dataclass, replace
+from typing import Mapping
 
 from ..contract.schema import ShardRecord
 
@@ -37,6 +39,50 @@ class RuntimeContext:
         object.__setattr__(self, "local_world_size", local_world_size)
         object.__setattr__(self, "local_rank", local_rank)
 
+    @classmethod
+    def from_env(cls, environ: Mapping[str, str] | None = None) -> "RuntimeContext":
+        """Build a process context from torchrun or SLURM environment variables."""
+        values = os.environ if environ is None else environ
+
+        def integer(*names: str, default: int) -> int:
+            for name in names:
+                value = values.get(name)
+                if value is not None and value != "":
+                    return int(value)
+            return default
+
+        world_size = integer("WORLD_SIZE", "SLURM_NTASKS", default=1)
+        global_rank = integer("RANK", "SLURM_PROCID", default=0)
+        local_world_size = integer("LOCAL_WORLD_SIZE", "SLURM_NTASKS_PER_NODE", default=world_size)
+        local_world_size = max(1, min(local_world_size, world_size))
+        local_rank = integer(
+            "LOCAL_RANK",
+            "SLURM_LOCALID",
+            default=global_rank % local_world_size,
+        )
+        inferred_nodes = max(1, (world_size + local_world_size - 1) // local_world_size)
+        node_rank = integer(
+            "GROUP_RANK",
+            "NODE_RANK",
+            "SLURM_NODEID",
+            default=global_rank // local_world_size,
+        )
+        num_nodes = integer(
+            "GROUP_WORLD_SIZE",
+            "NNODES",
+            "SLURM_NNODES",
+            default=inferred_nodes,
+        )
+        num_nodes = max(num_nodes, node_rank + 1)
+        return cls(
+            world_size=world_size,
+            global_rank=global_rank,
+            node_rank=node_rank,
+            num_nodes=num_nodes,
+            local_world_size=local_world_size,
+            local_rank=local_rank,
+        )
+
     def for_worker(self, worker_id: int, num_workers: int) -> "RuntimeContext":
         return replace(self, worker_id=worker_id, num_workers=max(1, num_workers))
 
@@ -56,4 +102,3 @@ class ShardPlanner:
         node_shards = shards[context.node_rank::context.num_nodes]
         rank_shards = node_shards[context.local_rank::context.local_world_size]
         return rank_shards[context.worker_id::context.num_workers]
-
