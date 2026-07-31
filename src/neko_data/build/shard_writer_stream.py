@@ -136,7 +136,7 @@ class StreamingWebDatasetShardWriter:
             num_samples=self._count,
             size_bytes=self._final.stat().st_size,
             sha256=_sha256(self._final),
-            metadata_path=(Path("metadata") / self.split / metadata_name.name).as_posix() if metadata_path else None,
+            metadata_path=(Path("metadata") / self.split / metadata_name).as_posix() if metadata_path else None,
             metadata_sha256=_sha256(metadata_path) if metadata_path else None,
             index=self.next_index - 1,
             source_ids=tuple(sorted(self._source_ids)),
@@ -155,4 +155,3 @@ class StreamingWebDatasetShardWriter:
     def close(self) -> list[ShardRecord]:
         self.close_current()
         return list(self.records)
-

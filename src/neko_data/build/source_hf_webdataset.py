@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 import fnmatch
+import hashlib
 import inspect
 import logging
 import os
 import tarfile
 import time
 from contextlib import contextmanager
-from dataclasses import dataclass
-from pathlib import Path
+from dataclasses import dataclass, replace
+from pathlib import Path, PurePosixPath
 from typing import BinaryIO, Iterable, Iterator
 
 from ..contract.records import NormalizedSample
@@ -44,6 +45,14 @@ def sample_key(member_name: str) -> str:
     return path.rsplit(".", 1)[0] if "." in path else path
 
 
+def canonical_source_path(path: str) -> str:
+    """Normalize an upstream repository path without using a signed URL."""
+    normalized = path.replace("\\", "/")
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    return str(PurePosixPath(normalized))
+
+
 @dataclass
 class TarSampleParts:
     key: str
@@ -75,6 +84,14 @@ def iter_tar_parts(fileobj: BinaryIO) -> Iterator[TarSampleParts]:
             if current is None:
                 current = TarSampleParts(key=key)
             suffix = Path(member.name).suffix.lower().lstrip(".")
+            duplicate_part = (
+                (suffix in IMAGE_EXTENSIONS and current.image is not None)
+                or (suffix == "txt" and current.text is not None)
+                or (suffix == "json" and current.json_data is not None)
+            )
+            if duplicate_part:
+                yield current
+                current = TarSampleParts(key=key)
             data = extracted.read()
             if suffix in IMAGE_EXTENSIONS and current.image is None:
                 current.image_name = member.name
@@ -138,9 +155,12 @@ class HFWebDatasetSource:
         request_timeout: float = 120.0,
         metadata_provider=None,
         caption_keys: Iterable[str] | None = None,
+        sample_key_namespace: str | None = None,
     ) -> None:
         if repo_id is None and input_files is None:
             raise ValueError("repo_id or input_files must be provided")
+        if sample_key_namespace not in {None, "source_path"}:
+            raise ValueError("sample_key_namespace must be None or 'source_path'")
         self.repo_id = repo_id
         self.repo_type = repo_type
         self.revision = revision
@@ -157,6 +177,23 @@ class HFWebDatasetSource:
         self.request_timeout = request_timeout
         self.metadata_provider = metadata_provider
         self.caption_keys = caption_keys
+        self.sample_key_namespace = sample_key_namespace
+
+    def _apply_sample_key_namespace(self, sample: NormalizedSample, path: str) -> NormalizedSample:
+        if self.sample_key_namespace is None:
+            return sample
+        upstream_shard = canonical_source_path(path)
+        namespace = hashlib.sha256(upstream_shard.encode("utf-8")).hexdigest()
+        raw_sample_key = sample.sample_key
+        return replace(
+            sample,
+            sample_key=f"{namespace}/{raw_sample_key}",
+            metadata={
+                **sample.metadata,
+                "raw_sample_key": raw_sample_key,
+                "upstream_shard": upstream_shard,
+            },
+        )
 
     def list_files(self) -> list[str]:
         if self.input_files is not None:
@@ -224,6 +261,7 @@ class HFWebDatasetSource:
             retries = 0
             while True:
                 try:
+                    seen_raw_keys: set[str] = set()
                     with self.open_file(path) as fileobj:
                         for sample in normalized_samples_from_tar(
                             fileobj,
@@ -232,6 +270,14 @@ class HFWebDatasetSource:
                             metadata_provider=self.metadata_provider,
                             caption_keys=self.caption_keys,
                         ):
+                            raw_sample_key = sample.sample_key
+                            if raw_sample_key in seen_raw_keys:
+                                raise ValueError(
+                                    f"Duplicate sample key {raw_sample_key!r} in upstream shard "
+                                    f"{canonical_source_path(path)!r}"
+                                )
+                            seen_raw_keys.add(raw_sample_key)
+                            sample = self._apply_sample_key_namespace(sample, path)
                             if skip_samples:
                                 skip_samples -= 1
                                 continue
@@ -258,4 +304,3 @@ class HFWebDatasetSource:
 
     def __len__(self) -> int:
         raise TypeError("HFWebDatasetSource is streaming and has no implicit length")
-

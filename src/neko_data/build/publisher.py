@@ -34,18 +34,30 @@ class DatasetPublisher:
         if self.storage is None:
             self.storage = LocalStorage() if is_local_path(self.destination) else S3Storage()
 
-    def publish_file(self, local_path: Path, relative_path: str) -> str:
+    def publish_file(
+        self,
+        local_path: Path,
+        relative_path: str,
+        *,
+        metadata: dict[str, str] | None = None,
+    ) -> str:
         target = join_uri(self.destination, relative_path)
         if isinstance(self.storage, LocalStorage):
             self.storage.upload_file(local_path, target)
         else:
-            self.storage.upload_file(local_path, target, max_concurrency=self.upload_concurrency)
+            self.storage.upload_file(
+                local_path,
+                target,
+                max_concurrency=self.upload_concurrency,
+                metadata=metadata,
+            )
         return target
 
     def publish_shard(self, record: ShardRecord, tar_path: Path, metadata_path: Path | None) -> None:
-        self.publish_file(tar_path, record.path)
+        self.publish_file(tar_path, record.path, metadata={"sha256": record.sha256})
         if metadata_path is not None and record.metadata_path is not None:
-            self.publish_file(metadata_path, record.metadata_path)
+            metadata = {"sha256": record.metadata_sha256} if record.metadata_sha256 else None
+            self.publish_file(metadata_path, record.metadata_path, metadata=metadata)
         if self.delete_after_upload:
             tar_path.unlink(missing_ok=True)
             if metadata_path is not None:
@@ -56,4 +68,3 @@ class DatasetPublisher:
 
     def publish_index(self, local_path: Path, split: str) -> str:
         return self.publish_file(local_path, f"indexes/{split}/shards.jsonl")
-

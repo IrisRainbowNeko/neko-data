@@ -94,6 +94,22 @@ class DatasetManifest:
             raise ValueError("version cannot be empty")
         if self.format != "webdataset":
             raise ValueError("v0.1 supports WebDataset tar shards only")
+        self._validate_unique_paths()
+
+    def _validate_unique_paths(self) -> None:
+        for field_name in ("path", "metadata_path"):
+            seen: set[str] = set()
+            duplicates: set[str] = set()
+            for shard in self.shards:
+                value = getattr(shard, field_name)
+                if not value:
+                    continue
+                if value in seen:
+                    duplicates.add(value)
+                seen.add(value)
+            if duplicates:
+                values = ", ".join(repr(value) for value in sorted(duplicates))
+                raise ValueError(f"Duplicate shard {field_name} values: {values}")
 
     @property
     def splits(self) -> dict[str, int]:
@@ -143,4 +159,3 @@ class DatasetManifest:
 
 def manifest_json(manifest: DatasetManifest) -> str:
     return json.dumps(manifest.to_dict(), ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-

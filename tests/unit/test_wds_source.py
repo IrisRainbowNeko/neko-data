@@ -3,6 +3,8 @@ import json
 import tarfile
 from contextlib import contextmanager
 
+import pytest
+
 from neko_data.build.source_hf_webdataset import HFWebDatasetSource
 
 
@@ -16,6 +18,18 @@ def _make_tar(path, image):
             info = tarfile.TarInfo(name)
             info.size = len(data)
             archive.addfile(info, io.BytesIO(data))
+
+
+def _make_duplicate_key_tar(path, image):
+    with tarfile.open(path, "w") as archive:
+        for _ in range(2):
+            for name, data in {
+                "42.jpg": image,
+                "42.json": b"{}",
+            }.items():
+                info = tarfile.TarInfo(name)
+                info.size = len(data)
+                archive.addfile(info, io.BytesIO(data))
 
 
 def test_hf_webdataset_source_reads_local_tar_as_stream(sample_image_bytes, tmp_path):
@@ -87,3 +101,45 @@ def test_hf_webdataset_source_retries_transient_stream(sample_image_bytes, tmp_p
     assert source.opens == 2
     assert samples[0].sample_key == "42"
     assert samples[0].caption == "default caption"
+
+
+def test_hf_webdataset_source_namespaces_keys_after_metadata_join(sample_image_bytes, tmp_path):
+    first_tar = tmp_path / "first.tar"
+    second_tar = tmp_path / "second.tar"
+    _make_tar(first_tar, sample_image_bytes)
+    _make_tar(second_tar, sample_image_bytes)
+
+    class RecordingProvider:
+        def __init__(self):
+            self.keys = []
+
+        def lookup(self, key):
+            self.keys.append(key)
+            return None
+
+    provider = RecordingProvider()
+    source = HFWebDatasetSource(
+        input_files=[str(first_tar), str(second_tar)],
+        metadata_provider=provider,
+        sample_key_namespace="source_path",
+    )
+    samples = list(source)
+
+    assert provider.keys == ["42", "42"]
+    assert len({sample.sample_key for sample in samples}) == 2
+    assert all(sample.sample_key.endswith("/42") for sample in samples)
+    assert {sample.metadata["raw_sample_key"] for sample in samples} == {"42"}
+    assert {sample.metadata["upstream_shard"] for sample in samples} == {
+        str(first_tar),
+        str(second_tar),
+    }
+    assert [sample.sample_key for sample in source] == [sample.sample_key for sample in samples]
+
+
+def test_hf_webdataset_source_rejects_duplicate_key_in_one_shard(sample_image_bytes, tmp_path):
+    tar_path = tmp_path / "duplicate.tar"
+    _make_duplicate_key_tar(tar_path, sample_image_bytes)
+    source = HFWebDatasetSource(input_files=[str(tar_path)], sample_key_namespace="source_path")
+
+    with pytest.raises(ValueError, match="Duplicate sample key '42' in upstream shard"):
+        list(source)

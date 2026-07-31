@@ -68,6 +68,29 @@ class S3Storage:
         destination.parent.mkdir(parents=True, exist_ok=True)
         self.client.download_file(bucket, key, str(destination))
 
+    def copy(
+        self,
+        source_uri: str,
+        destination_uri: str,
+        *,
+        metadata: Mapping[str, str] | None = None,
+    ) -> None:
+        """Copy an object within one bucket without routing bytes through the client."""
+        source_bucket, source_key = _split_s3_uri(source_uri)
+        destination_bucket, destination_key = _split_s3_uri(destination_uri)
+        if source_bucket != destination_bucket:
+            raise ValueError("S3Storage.copy supports same-bucket copies only")
+        request = {
+            "Bucket": destination_bucket,
+            "Key": destination_key,
+            "CopySource": {"Bucket": source_bucket, "Key": source_key},
+        }
+        object_metadata = {str(name): str(value) for name, value in (metadata or {}).items()}
+        if object_metadata:
+            request["Metadata"] = object_metadata
+            request["MetadataDirective"] = "REPLACE"
+        self.client.copy_object(**request)
+
     def upload_file(
         self,
         source: Path,

@@ -16,6 +16,9 @@ Each manifest shard contains at least `path`, `split`, `num_samples`,
 `size_bytes`, and `sha256`; the Parquet path and checksum are included when
 metadata output is enabled.
 
+Non-empty WDS `path` and `metadata_path` values must each be globally unique
+inside a manifest. Manifest construction and loading reject collisions.
+
 Each tar sample contains one image, one complete JSON metadata member, and an
 optional `.txt` member containing the default caption. Stable JSON fields are
 `sample_key`, `caption`, `captions`, `width`, `height`, `source_id`, `split`,
@@ -27,3 +30,8 @@ The Parquet sidecar has one row per sample with stable fields including
 caption, and `metadata_json`. Named caption variants are expanded as
 `caption_<name>` columns. No image bytes are duplicated in Parquet.
 
+For Hub repositories where a raw key is only unique inside one source tar,
+configure `sample_key_namespace: source_path`. The source performs metadata
+joins with the raw key first, then emits
+`sha256(canonical_source_tar_path)/raw_key`. It also retains
+`raw_sample_key` and `upstream_shard` in JSON and Parquet metadata.
