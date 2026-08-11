@@ -35,7 +35,6 @@ def test_manifest_round_trip(tmp_path):
     assert loaded.shards[0].sha256 == "abc"
 
 
-
 @pytest.mark.parametrize("field_name", ["path", "metadata_path"])
 def test_manifest_rejects_duplicate_shard_paths(field_name):
     first = {

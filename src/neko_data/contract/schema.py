@@ -102,7 +102,7 @@ class DatasetManifest:
             duplicates: set[str] = set()
             for shard in self.shards:
                 value = getattr(shard, field_name)
-                if value is None:
+                if not value:
                     continue
                 if value in seen:
                     duplicates.add(value)
@@ -161,4 +161,3 @@ class DatasetManifest:
 
 def manifest_json(manifest: DatasetManifest) -> str:
     return json.dumps(manifest.to_dict(), ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-

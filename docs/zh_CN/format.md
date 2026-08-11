@@ -25,6 +25,9 @@ manifest 中的 shard 至少包含：
 }
 ```
 
+同一 manifest 内，非空的 WDS `path` 必须全局唯一，非空的
+`metadata_path` 也必须全局唯一。构造和加载 manifest 时都会拒绝路径碰撞。
+
 ## Tar sample
 
 ```text
@@ -55,3 +58,7 @@ JSON 的稳定字段包括：
 `metadata_json`。caption 变体展开为 `caption_<name>` 列，简单标量 metadata 也会保留
 为独立列；复杂 metadata 保留在 `metadata_json`。
 
+如果 Hub 仓库里的 raw key 只在单个源 tar 内唯一，在 source 配置中启用
+`sample_key_namespace: source_path`。metadata/caption join 仍先使用 raw key，
+join 完成后再生成 `sha256(canonical_source_tar_path)/raw_key`；JSON 和 Parquet
+同时保留 `raw_sample_key` 与 `upstream_shard` 供追溯和全量审计。

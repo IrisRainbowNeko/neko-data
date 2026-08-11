@@ -2,6 +2,8 @@ import io
 import sys
 from pathlib import Path
 
+import pytest
+
 from neko_data.storage.http import HTTPStorage
 from neko_data.storage.r2 import S3Storage
 
@@ -23,6 +25,7 @@ class Client:
     def __init__(self):
         self.body = Body(b"manifest")
         self.download_calls = []
+        self.copy_kwargs = None
         self.put_body = None
         self.put_kwargs = None
 
@@ -38,6 +41,9 @@ class Client:
     def put_object(self, **kwargs):
         self.put_kwargs = {key: value for key, value in kwargs.items() if key != "Body"}
         self.put_body = kwargs["Body"].read()
+
+    def copy_object(self, **kwargs):
+        self.copy_kwargs = kwargs
 
     def head_object(self, **kwargs):
         return {"ContentLength": 8}
@@ -69,6 +75,32 @@ def test_s3_storage_can_use_single_put(tmp_path):
         "ContentLength": len(b"tar payload"),
     }
     assert client.put_body == b"tar payload"
+
+
+def test_s3_storage_copies_with_replaced_metadata():
+    client = Client()
+    storage = S3Storage(client=client)
+
+    storage.copy(
+        "s3://bucket/datasets/source.tar",
+        "s3://bucket/datasets/destination.tar",
+        metadata={"sha256": "abc"},
+    )
+
+    assert client.copy_kwargs == {
+        "Bucket": "bucket",
+        "Key": "datasets/destination.tar",
+        "CopySource": {"Bucket": "bucket", "Key": "datasets/source.tar"},
+        "Metadata": {"sha256": "abc"},
+        "MetadataDirective": "REPLACE",
+    }
+
+
+def test_s3_storage_rejects_cross_bucket_copy():
+    storage = S3Storage(client=Client())
+
+    with pytest.raises(ValueError, match="same-bucket"):
+        storage.copy("s3://source/key", "s3://destination/key")
 
 class Response:
     def __init__(self, data: bytes):
