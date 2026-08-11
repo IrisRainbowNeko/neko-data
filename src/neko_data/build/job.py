@@ -15,6 +15,7 @@ from .publisher import DatasetPublisher
 from .shard_writer_stream import StreamingWebDatasetShardWriter
 from .source_hf_dataset import HFDatasetsSource
 from .source_hf_webdataset import HFWebDatasetSource
+from .source_url_parquet import URLParquetSource
 
 
 @dataclass
@@ -62,6 +63,14 @@ class BuildJob:
             source = HFDatasetsSource(metadata_provider=provider, **{
                 key: value for key, value in source_config.items() if key != "type"
             })
+        elif source_type == "url_parquet":
+            options = {key: value for key, value in source_config.items() if key != "type"}
+            paths = options.pop("parquet_paths", options.pop("path", None))
+            if paths is None:
+                raise ValueError("url_parquet source requires parquet_paths")
+            if isinstance(paths, (str, os.PathLike)):
+                paths = [paths]
+            source = URLParquetSource(paths, **options)
         else:
             raise ValueError(f"Unsupported build source type: {source_type}")
         publish_config = config.get("publish")

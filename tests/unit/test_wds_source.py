@@ -30,6 +30,30 @@ def test_hf_webdataset_source_reads_local_tar_as_stream(sample_image_bytes, tmp_
     assert samples[0].caption == "default caption"
     assert samples[0].width == 32
 
+def test_hf_webdataset_source_can_namespace_keys_by_upstream_shard(
+    sample_image_bytes, tmp_path
+):
+    first_tar = tmp_path / "first.tar"
+    second_tar = tmp_path / "second.tar"
+    _make_tar(first_tar, sample_image_bytes)
+    _make_tar(second_tar, sample_image_bytes)
+    samples = list(
+        HFWebDatasetSource(
+            input_files=[str(first_tar), str(second_tar)],
+            source_id="fixture",
+            sample_key_namespace="source_path",
+        )
+    )
+    assert len(samples) == 2
+    assert samples[0].sample_key != samples[1].sample_key
+    assert all(sample.sample_key.endswith("/42") for sample in samples)
+    assert [sample.metadata["raw_sample_key"] for sample in samples] == ["42", "42"]
+    assert {sample.metadata["upstream_shard"] for sample in samples} == {
+        str(first_tar),
+        str(second_tar),
+    }
+
+
 def test_hf_webdataset_source_accepts_non_seekable_hub_stream(sample_image_bytes, tmp_path):
     tar_path = tmp_path / "input.tar"
     _make_tar(tar_path, sample_image_bytes)

@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from neko_data.contract import DatasetManifest, NormalizedSample, ShardRecord
 from neko_data.contract.manifest import load_manifest, write_manifest
 
@@ -32,3 +34,24 @@ def test_manifest_round_trip(tmp_path):
     assert loaded.splits == {"train": 4}
     assert loaded.shards[0].sha256 == "abc"
 
+
+
+@pytest.mark.parametrize("field_name", ["path", "metadata_path"])
+def test_manifest_rejects_duplicate_shard_paths(field_name):
+    first = {
+        "path": "wds/train/a.tar",
+        "metadata_path": "metadata/train/a.parquet",
+    }
+    second = {
+        "path": "wds/train/b.tar",
+        "metadata_path": "metadata/train/b.parquet",
+    }
+    second[field_name] = first[field_name]
+    shards = [
+        ShardRecord(
+            **record, split="train", num_samples=1, size_bytes=1, sha256="abc"
+        )
+        for record in (first, second)
+    ]
+    with pytest.raises(ValueError, match=f"duplicate {field_name}"):
+        DatasetManifest(dataset_id="broken", version="v1", shards=shards)

@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import fnmatch
+import hashlib
 import inspect
 import logging
 import os
 import tarfile
 import time
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import BinaryIO, Iterable, Iterator
 
@@ -135,6 +136,7 @@ class HFWebDatasetSource:
         path_prefix: str = "",
         split: str = "train",
         source_id: str | None = None,
+        sample_key_namespace: str = "none",
         request_timeout: float = 120.0,
         metadata_provider=None,
         caption_keys: Iterable[str] | None = None,
@@ -154,6 +156,9 @@ class HFWebDatasetSource:
         self.path_prefix = path_prefix.strip("/")
         self.split = split
         self.source_id = source_id or repo_id or "hf-webdataset"
+        if sample_key_namespace not in {"none", "source_path"}:
+            raise ValueError("sample_key_namespace must be none or source_path")
+        self.sample_key_namespace = sample_key_namespace
         self.request_timeout = request_timeout
         self.metadata_provider = metadata_provider
         self.caption_keys = caption_keys
@@ -235,6 +240,18 @@ class HFWebDatasetSource:
                             if skip_samples:
                                 skip_samples -= 1
                                 continue
+                            if self.sample_key_namespace == "source_path":
+                                raw_key = sample.sample_key
+                                namespace = hashlib.sha256(path.encode("utf-8")).hexdigest()
+                                sample = replace(
+                                    sample,
+                                    sample_key=f"{namespace}/{raw_key}",
+                                    metadata={
+                                        **sample.metadata,
+                                        "raw_sample_key": raw_key,
+                                        "upstream_shard": path,
+                                    },
+                                )
                             emitted_from_file += 1
                             yield sample
                     break

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import socket
 import time
 import uuid
 from contextlib import contextmanager
@@ -11,8 +12,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
 
+from filelock import FileLock, Timeout
+
 from ..contract.schema import ShardRecord
 from ..storage import is_local_path, local_path_from_uri
+
+
+_STALE_PROCESS_FILE_SECONDS = 24 * 60 * 60
+_STALE_CLEANUP_INTERVAL_SECONDS = 60 * 60
 
 
 def _file_sha256(path: Path) -> str:
@@ -48,19 +55,19 @@ class DiskShardCache:
             raise ValueError("strategy must be required, preferred, or disabled")
         self.root = Path(root)
         self.objects = self.root / "objects"
+        self.eviction_lock = self.root / ".eviction.lock"
+        self.cleanup_stamp = self.root / ".stale-cleanup.stamp"
+        self.hostname = socket.gethostname().replace(".", "_")
         self.storage = storage
         self.max_size_bytes = max_size_bytes
         self.evict_size_bytes = min(evict_size_bytes, max_size_bytes)
         self.strategy = strategy
         self.stats = CacheStats()
         self.objects.mkdir(parents=True, exist_ok=True)
+        self._cleanup_stale()
 
     @staticmethod
     def _lock(path: Path):
-        try:
-            from filelock import FileLock
-        except ImportError as exc:
-            raise RuntimeError("Disk cache requires filelock") from exc
         return FileLock(str(path) + ".lock")
 
     def _key(self, uri: str, shard: ShardRecord | None) -> str:
@@ -89,27 +96,115 @@ class DiskShardCache:
         return True
 
     def _lease(self, path: Path) -> Path:
-        lease = path.with_name(f".{path.name}.lease.{os.getpid()}.{uuid.uuid4().hex}")
+        lease = path.with_name(
+            f".{path.name}.lease.{self.hostname}.{os.getpid()}.{uuid.uuid4().hex}"
+        )
         lease.touch()
         return lease
 
     def _has_lease(self, path: Path) -> bool:
         return any(self.objects.glob(f".{path.name}.lease.*"))
 
-    def _evict(self) -> None:
-        entries = [
-            path for path in self.objects.iterdir()
-            if (path.is_file() and ".lease." not in path.name
-                    and ".partial." not in path.name and ".verified" not in path.name
-                    and not path.name.endswith(".lock"))
-        ]
+    @staticmethod
+    def _is_cache_object(path: Path) -> bool:
+        return (
+            path.is_file()
+            and not path.name.startswith(".")
+            and not path.name.endswith(".lock")
+        )
+
+    @staticmethod
+    def _leased_object_names(paths: list[Path]) -> set[str]:
+        leased = set()
+        for path in paths:
+            if not path.name.startswith(".") or ".lease." not in path.name:
+                continue
+            object_name, _, _ = path.name[1:].partition(".lease.")
+            if object_name:
+                leased.add(object_name)
+        return leased
+
+    @staticmethod
+    def _pid_is_alive(pid: int) -> bool:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        return True
+
+    def _process_file_is_stale(self, path: Path, now: float) -> bool:
+        name = path.name
+        age = max(0.0, now - path.stat().st_mtime)
+        if ".partial." in name:
+            owner = name.partition(".partial.")[2].split(".", 1)[0]
+            try:
+                pid = int(owner)
+            except ValueError:
+                return age >= _STALE_PROCESS_FILE_SECONDS
+            return not self._pid_is_alive(pid)
+        if ".lease." in name:
+            owner = name.partition(".lease.")[2].split(".")
+            if len(owner) < 2 or owner[0] != self.hostname:
+                return age >= _STALE_PROCESS_FILE_SECONDS
+            try:
+                pid = int(owner[1])
+            except ValueError:
+                return age >= _STALE_PROCESS_FILE_SECONDS
+            return not self._pid_is_alive(pid)
+        return False
+
+    def _cleanup_stale_locked(self, paths: list[Path] | None = None) -> None:
+        paths = list(self.objects.iterdir()) if paths is None else paths
+        now = time.time()
+        for path in paths:
+            try:
+                if self._process_file_is_stale(path, now):
+                    path.unlink(missing_ok=True)
+                    continue
+                if path.name.startswith(".") and path.name.endswith(".verified"):
+                    object_name = path.name[1:-len(".verified")]
+                    if not (self.objects / object_name).is_file():
+                        path.unlink(missing_ok=True)
+            except FileNotFoundError:
+                continue
+
+    def _cleanup_stale(self) -> None:
+        lock = self._lock(self.eviction_lock)
+        try:
+            with lock.acquire(timeout=0):
+                now = time.time()
+                if (
+                    self.cleanup_stamp.exists()
+                    and now - self.cleanup_stamp.stat().st_mtime
+                    < _STALE_CLEANUP_INTERVAL_SECONDS
+                ):
+                    return
+                self._cleanup_stale_locked()
+                self.cleanup_stamp.touch()
+        except Timeout:
+            return
+
+    def _evict_locked(self) -> None:
+        # A single directory census replaces the former per-object glob. The old
+        # implementation became quadratic and all ranks repeated it concurrently.
+        paths = list(self.objects.iterdir())
+        self._cleanup_stale_locked(paths)
+        paths = [path for path in paths if path.exists()]
+        entries = [path for path in paths if self._is_cache_object(path)]
         total = sum(path.stat().st_size for path in entries)
         if total <= self.max_size_bytes:
             return
+        leased = self._leased_object_names(paths)
         for path in sorted(entries, key=lambda item: item.stat().st_atime):
             if total <= self.evict_size_bytes:
                 break
+            if path.name in leased:
+                continue
             with self._lock(path):
+                # A lease may have appeared after the census while this process
+                # waited for the object lock, so recheck before unlinking.
                 if self._has_lease(path):
                     continue
                 try:
@@ -119,6 +214,16 @@ class DiskShardCache:
                     total -= size
                 except FileNotFoundError:
                     continue
+
+    def _evict(self) -> None:
+        lock = self._lock(self.eviction_lock)
+        try:
+            with lock.acquire(timeout=0):
+                self._evict_locked()
+        except Timeout:
+            # Another process on the node is already bringing the shared cache
+            # below its low-water mark. A later download will retry if needed.
+            return
 
     def _download(self, uri: str, path: Path, shard: ShardRecord | None) -> None:
         partial = path.with_name(f".{path.name}.partial.{os.getpid()}.{uuid.uuid4().hex}")
@@ -133,6 +238,7 @@ class DiskShardCache:
             self.stats.bytes_downloaded += path.stat().st_size
         finally:
             partial.unlink(missing_ok=True)
+            self._verified_marker(partial).unlink(missing_ok=True)
 
     @contextmanager
     def acquire(self, uri: str, shard: ShardRecord | None = None) -> Iterator[Path]:
@@ -183,4 +289,3 @@ class DiskShardCache:
                 raise
             with self.storage.open(uri) as stream:
                 yield stream
-
