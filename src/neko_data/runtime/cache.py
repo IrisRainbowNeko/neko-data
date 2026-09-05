@@ -17,7 +17,6 @@ from filelock import FileLock, Timeout
 from ..contract.schema import ShardRecord
 from ..storage import is_local_path, local_path_from_uri
 
-
 _STALE_PROCESS_FILE_SECONDS = 24 * 60 * 60
 _STALE_CLEANUP_INTERVAL_SECONDS = 60 * 60
 
@@ -78,6 +77,16 @@ class DiskShardCache:
     def _verified_marker(self, path: Path) -> Path:
         return path.with_name(f".{path.name}.verified")
 
+    def _write_verified_marker(self, path: Path, digest: str) -> None:
+        """Write a marker whose mtime is never older than the cache object."""
+        marker = self._verified_marker(path)
+        marker.write_text(digest + "\n", encoding="ascii")
+        # Some distributed filesystems can assign the marker an mtime a few
+        # nanoseconds before the object despite the write ordering. Aligning
+        # both timestamps keeps the marker check deterministic.
+        mtime_ns = path.stat().st_mtime_ns
+        os.utime(marker, ns=(mtime_ns, mtime_ns))
+
     def _valid(self, path: Path, shard: ShardRecord | None) -> bool:
         if not path.exists() or not path.is_file():
             return False
@@ -87,12 +96,17 @@ class DiskShardCache:
         if shard is None or not shard.sha256:
             return True
         marker = self._verified_marker(path)
-        if (marker.exists() and marker.read_text(encoding="ascii").strip() == shard.sha256
-                and marker.stat().st_mtime_ns >= stat.st_mtime_ns):
+        if (
+            marker.exists()
+            and marker.read_text(encoding="ascii").strip() == shard.sha256
+            # Allow the small timestamp skew seen on the shared filesystem;
+            # the marker is still keyed by the expected content digest.
+            and marker.stat().st_mtime_ns + 1_000_000 >= stat.st_mtime_ns
+        ):
             return True
         if _file_sha256(path) != shard.sha256:
             return False
-        marker.write_text(shard.sha256 + "\n", encoding="ascii")
+        self._write_verified_marker(path, shard.sha256)
         return True
 
     def _lease(self, path: Path) -> Path:
@@ -155,20 +169,38 @@ class DiskShardCache:
             return not self._pid_is_alive(pid)
         return False
 
-    def _cleanup_stale_locked(self, paths: list[Path] | None = None) -> None:
+    def _cleanup_stale_locked(self, paths: list[Path] | None = None) -> int:
         paths = list(self.objects.iterdir()) if paths is None else paths
         now = time.time()
+        removed = 0
         for path in paths:
             try:
                 if self._process_file_is_stale(path, now):
                     path.unlink(missing_ok=True)
+                    removed += 1
                     continue
                 if path.name.startswith(".") and path.name.endswith(".verified"):
                     object_name = path.name[1:-len(".verified")]
                     if not (self.objects / object_name).is_file():
                         path.unlink(missing_ok=True)
+                        removed += 1
             except FileNotFoundError:
                 continue
+        return removed
+
+    def cleanup_stale_process_files(self, *, timeout: float = 60.0) -> int:
+        """Remove files owned by dead local processes under the cache lock.
+
+        Unlike the periodic initialization cleanup, this method deliberately
+        bypasses the one-hour rate limit. Launchers call it after DataLoader
+        processes have exited, when their generator finalizers may not have had
+        an opportunity to release every prefetched-shard lease.
+        """
+        lock = self._lock(self.eviction_lock)
+        with lock.acquire(timeout=timeout):
+            removed = self._cleanup_stale_locked()
+            self.cleanup_stamp.touch()
+        return removed
 
     def _cleanup_stale(self) -> None:
         lock = self._lock(self.eviction_lock)
@@ -233,7 +265,7 @@ class DiskShardCache:
                 raise IOError(f"Downloaded shard failed size/checksum validation: {uri}")
             os.replace(partial, path)
             if shard is not None and shard.sha256:
-                self._verified_marker(path).write_text(shard.sha256 + "\n", encoding="ascii")
+                self._write_verified_marker(path, shard.sha256)
             self.stats.downloads += 1
             self.stats.bytes_downloaded += path.stat().st_size
         finally:

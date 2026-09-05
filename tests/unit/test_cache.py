@@ -156,3 +156,20 @@ def test_cache_initialization_removes_dead_process_files(tmp_path):
     assert not orphan_marker.exists()
     assert active_partial.exists()
     assert active_lease.exists()
+
+
+def test_forced_cleanup_removes_dead_process_files_but_preserves_live_lease(tmp_path):
+    cache = DiskShardCache(tmp_path / "cache", FakeRemoteStorage(tmp_path / "unused"))
+    dead_pid = 2**31 - 1
+    stale_lease = cache.objects / f".item.tar.lease.{cache.hostname}.{dead_pid}.token"
+    active_lease = cache.objects / f".live.tar.lease.{cache.hostname}.{os.getpid()}.token"
+    stale_lease.write_text("state")
+    active_lease.write_text("state")
+
+    # A fresh cleanup stamp must not suppress explicit launcher cleanup.
+    cache.cleanup_stamp.touch()
+    removed = cache.cleanup_stale_process_files()
+
+    assert removed == 1
+    assert not stale_lease.exists()
+    assert active_lease.exists()

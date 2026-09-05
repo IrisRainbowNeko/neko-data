@@ -24,19 +24,24 @@ from .reader import iter_shard_samples
 
 
 def _shuffle_stream(items: Iterable, buffer_size: int, rng: random.Random) -> Iterator:
-    if buffer_size <= 1:
-        yield from items
-        return
-    buffer = []
     iterator = iter(items)
-    for item in iterator:
-        buffer.append(item)
-        if len(buffer) < buffer_size:
-            continue
-        index = rng.randrange(len(buffer))
-        yield buffer.pop(index)
-    while buffer:
-        yield buffer.pop(rng.randrange(len(buffer)))
+    try:
+        if buffer_size <= 1:
+            yield from iterator
+            return
+        buffer = []
+        for item in iterator:
+            buffer.append(item)
+            if len(buffer) < buffer_size:
+                continue
+            index = rng.randrange(len(buffer))
+            yield buffer.pop(index)
+        while buffer:
+            yield buffer.pop(rng.randrange(len(buffer)))
+    finally:
+        close = getattr(iterator, "close", None)
+        if close is not None:
+            close()
 
 
 class DatasetView(IterableDataset):
@@ -139,6 +144,7 @@ class DatasetView(IterableDataset):
         if self.prefetch_workers > 0 and self.cache.strategy != "disabled":
             prefetcher = ShardPrefetcher(self.cache, max_workers=self.prefetch_workers,
                                          max_pending=max(1, self.prefetch_shards * 2))
+        samples = None
         try:
             samples = self._raw_samples(shards, prefetcher)
             samples = _shuffle_stream(samples, self.sample_shuffle, random.Random(self.seed + self.epoch))
@@ -154,6 +160,9 @@ class DatasetView(IterableDataset):
                     rng=rng,
                 )
         finally:
+            close = getattr(samples, "close", None)
+            if close is not None:
+                close()
             if prefetcher is not None:
                 prefetcher.close()
 
@@ -174,6 +183,8 @@ def open_dataset(
     runtime: RuntimeContext | None = None,
     **kwargs,
 ) -> DatasetView:
-    loaded = ManifestLoader(storage=kwargs.pop("storage", None)).load(manifest_uri)
+    loaded = ManifestLoader(storage=kwargs.pop("storage", None)).load(
+        manifest_uri,
+        allow_duplicate_metadata_paths=kwargs.pop("allow_duplicate_metadata_paths", False),
+    )
     return DatasetView(loaded, runtime=runtime, **kwargs)
-

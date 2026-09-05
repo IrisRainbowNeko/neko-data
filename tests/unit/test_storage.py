@@ -77,6 +77,67 @@ def test_s3_storage_can_use_single_put(tmp_path):
     assert client.put_body == b"tar payload"
 
 
+def test_s3_storage_rebuilds_failed_multipart_session(tmp_path):
+    class RetryingClient:
+        def __init__(self):
+            self.calls = []
+
+        def upload_file(self, source, bucket, key, **kwargs):
+            self.calls.append((source, bucket, key, kwargs))
+            if len(self.calls) == 1:
+                raise RuntimeError("NoSuchUpload")
+
+    client = RetryingClient()
+    source = tmp_path / "shard.tar"
+    source.write_bytes(b"multipart payload")
+    storage = S3Storage(
+        client=client,
+        multipart_threshold=1,
+        multipart_chunksize=2,
+        upload_attempts=2,
+        upload_retry_base_seconds=0,
+    )
+
+    storage.upload_file(source, "s3://bucket/path/shard.tar")
+
+    assert len(client.calls) == 2
+    config = client.calls[-1][3]["Config"]
+    assert config.multipart_threshold == 1
+    assert config.multipart_chunksize == 2
+
+
+def test_s3_storage_accepts_lost_completion_response_when_head_matches(tmp_path):
+    class LostResponseClient:
+        def __init__(self, size):
+            self.size = size
+            self.upload_calls = 0
+
+        def upload_file(self, source, bucket, key, **kwargs):
+            self.upload_calls += 1
+            raise RuntimeError("NoSuchUpload")
+
+        def head_object(self, **kwargs):
+            return {"ContentLength": self.size, "Metadata": {"sha256": "digest"}}
+
+    source = tmp_path / "shard.tar"
+    source.write_bytes(b"completed remotely")
+    client = LostResponseClient(source.stat().st_size)
+    storage = S3Storage(
+        client=client,
+        multipart_threshold=1,
+        upload_attempts=2,
+        upload_retry_base_seconds=0,
+    )
+
+    storage.upload_file(
+        source,
+        "s3://bucket/path/shard.tar",
+        metadata={"sha256": "digest"},
+    )
+
+    assert client.upload_calls == 1
+
+
 def test_s3_storage_copies_with_replaced_metadata():
     client = Client()
     storage = S3Storage(client=client)
