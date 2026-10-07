@@ -75,6 +75,9 @@ The adapter returns the existing RainbowNeko shape:
 }
 ```
 
+See [docs/en/labeled.md](docs/en/labeled.md) for labeled (class/identity) datasets,
+grouped shards, multi-split builds and `RainbowLabeledImageSource`.
+
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE).

@@ -87,3 +87,6 @@ source = RainbowTextImageSource.from_manifest(
 详细的 500G 磁盘规划、R2 布局、缓存策略和失败恢复见
 [`docs/zh_CN/architecture.md`](docs/zh_CN/architecture.md)。
 
+带标签（类别/角色）数据集、分组分片、多 split 构建和 `RainbowLabeledImageSource`，
+见 [docs/zh_CN/labeled.md](docs/zh_CN/labeled.md)。
+

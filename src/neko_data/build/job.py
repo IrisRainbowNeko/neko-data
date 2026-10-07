@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
-from ..contract import DatasetManifest, write_manifest, write_shard_index
+from ..contract import DatasetManifest, load_manifest, write_manifest, write_shard_index
 from ..contract.schema import ShardRecord
 from .metadata import DuckDBMetadataProvider
 from .publisher import DatasetPublisher
@@ -34,6 +34,7 @@ class BuildJob:
     overwrite: bool = False
     publisher: DatasetPublisher | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    group_key: str | None = None
 
     @classmethod
     def from_yaml(cls, path: str | os.PathLike[str]) -> "BuildJob":
@@ -63,6 +64,12 @@ class BuildJob:
             source = HFDatasetsSource(metadata_provider=provider, **{
                 key: value for key, value in source_config.items() if key != "type"
             })
+        elif source_type == "python":
+            options = {key: value for key, value in source_config.items() if key != "type"}
+            factory = options.pop("factory", None)
+            if not factory:
+                raise ValueError("python source requires factory: 'module:function'")
+            source = _load_factory(factory)(**options.pop("kwargs", {}), **options)
         elif source_type == "url_parquet":
             options = {key: value for key, value in source_config.items() if key != "type"}
             paths = options.pop("parquet_paths", options.pop("path", None))
@@ -97,7 +104,56 @@ class BuildJob:
             overwrite=bool(build.get("overwrite", False)),
             publisher=publisher,
             metadata=dict(dataset.get("metadata", {})),
+            group_key=build.get("group_key"),
         )
+
+
+def _load_factory(spec: str):
+    import importlib
+
+    module_name, _, attribute = spec.partition(":")
+    if not module_name or not attribute:
+        raise ValueError(f"python source factory must look like 'module:function', got {spec!r}")
+    target = importlib.import_module(module_name)
+    for part in attribute.split("."):
+        target = getattr(target, part)
+    return target
+
+
+def _journal_path(reports_dir: Path, split: str) -> Path:
+    """Per-split journal; a legacy single-split journal is reused when it matches."""
+    path = reports_dir / f"build-journal-{split}.jsonl"
+    legacy = reports_dir / "build-journal.jsonl"
+    if not path.exists() and legacy.exists():
+        records = [json.loads(line) for line in legacy.read_text(encoding="utf-8").splitlines() if line.strip()]
+        if records and all(record.get("split") == split for record in records):
+            return legacy
+    return path
+
+
+def _other_split_state(root: Path, job: BuildJob) -> tuple[list[ShardRecord], dict[str, Any]]:
+    """Shards and metadata already published for other splits of the same dataset."""
+    path = root / "manifest.json"
+    if not path.exists():
+        return [], {}
+    existing = load_manifest(path)
+    if existing.dataset_id != job.dataset_id or existing.version != job.version:
+        return [], {}
+    return [shard for shard in existing.shards if shard.split != job.split], dict(existing.metadata)
+
+
+def _rewrite_errors(path: Path, split: str) -> None:
+    """Drop error lines of ``split`` while keeping those of other splits."""
+    if not path.exists():
+        return
+    kept = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        try:
+            if line.strip() and json.loads(line).get("split", split) != split:
+                kept.append(line + "\n")
+        except json.JSONDecodeError:
+            continue
+    path.write_text("".join(kept), encoding="utf-8")
 
 
 def build_dataset(job: BuildJob) -> DatasetManifest:
@@ -108,7 +164,7 @@ def build_dataset(job: BuildJob) -> DatasetManifest:
     root.mkdir(parents=True, exist_ok=True)
     reports_dir.mkdir(parents=True, exist_ok=True)
 
-    journal_path = reports_dir / "build-journal.jsonl"
+    journal_path = _journal_path(reports_dir, job.split)
     previous_records: list[ShardRecord] = []
     if journal_path.exists() and not job.overwrite:
         if not job.resume:
@@ -146,13 +202,15 @@ def build_dataset(job: BuildJob) -> DatasetManifest:
         start_index=next_index,
         overwrite=job.overwrite or job.resume,
         on_shard=on_shard,
+        group_key=job.group_key,
     )
     skipped = completed_samples
     total_samples = completed_samples
     error_path = reports_dir / "errors.jsonl"
-    error_mode = "a" if job.resume and not job.overwrite else "w"
+    if not job.resume or job.overwrite:
+        _rewrite_errors(error_path, job.split)
     source_iterator = iter(job.source)
-    with error_path.open(error_mode, encoding="utf-8") as errors:
+    with error_path.open("a", encoding="utf-8") as errors:
         while True:
             try:
                 sample = next(source_iterator)
@@ -161,7 +219,8 @@ def build_dataset(job: BuildJob) -> DatasetManifest:
             except (TypeError, ValueError, UnicodeError) as exc:
                 if not job.skip_invalid_samples:
                     raise
-                errors.write(json.dumps({"sample_key": None, "error": str(exc)}, ensure_ascii=False) + "\n")
+                errors.write(json.dumps({"sample_key": None, "split": job.split, "error": str(exc)},
+                                        ensure_ascii=False) + "\n")
                 continue
             if skipped:
                 skipped -= 1
@@ -174,26 +233,43 @@ def build_dataset(job: BuildJob) -> DatasetManifest:
                     raise
                 errors.write(json.dumps({
                     "sample_key": getattr(sample, "sample_key", None),
+                    "split": job.split,
                     "error": str(exc),
                 }, ensure_ascii=False) + "\n")
     if skipped:
         raise RuntimeError(f"Resume journal contains {skipped} samples not present in the input stream")
 
     records = previous_records + writer.close()
+    other_records, existing_metadata = _other_split_state(root, job)
+    split_stats = dict(existing_metadata.get("split_stats", {}))
+    split_stats[job.split] = {"num_samples": total_samples, "resumed_samples": completed_samples,
+                              "shards": len(records)}
+    all_records = other_records + records
     manifest = DatasetManifest(
         dataset_id=job.dataset_id,
         version=job.version,
-        shards=records,
-        metadata={**job.metadata, "num_samples": total_samples, "resumed_samples": completed_samples},
+        shards=all_records,
+        metadata={
+            **existing_metadata,
+            **job.metadata,
+            "num_samples": sum(record.num_samples for record in all_records),
+            "resumed_samples": completed_samples,
+            "split_stats": split_stats,
+        },
     )
     manifest_path = write_manifest(root / "manifest.json", manifest)
     index_path = write_shard_index(root / "indexes" / job.split / "shards.jsonl", records)
+    summary = {"dataset_id": job.dataset_id, "version": job.version, "split": job.split,
+               "samples": total_samples, "shards": len(records), "resumed_samples": completed_samples}
+    (reports_dir / f"build-summary-{job.split}.json").write_text(json.dumps(summary, indent=2) + "\n",
+                                                                 encoding="utf-8")
     (reports_dir / "build-summary.json").write_text(
-        json.dumps({"dataset_id": job.dataset_id, "version": job.version, "samples": total_samples,
-                    "shards": len(records), "resumed_samples": completed_samples}, indent=2) + "\n",
+        json.dumps({"dataset_id": job.dataset_id, "version": job.version,
+                    "samples": manifest.metadata["num_samples"], "shards": len(all_records),
+                    "resumed_samples": completed_samples, "splits": split_stats}, indent=2) + "\n",
         encoding="utf-8",
     )
     if job.publisher:
-        job.publisher.publish_manifest(manifest_path)
         job.publisher.publish_index(index_path, job.split)
+        job.publisher.publish_manifest(manifest_path)
     return manifest

@@ -8,6 +8,7 @@
 - [架构与 500G 磁盘规划](architecture.md)
 - [统一格式与字段契约](format.md)
 - [构建、发布和训练运行手册](operations.md)
+- [带标签图像数据集与分组分片](labeled.md)
 
 ## 设计原则
 

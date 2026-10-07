@@ -9,6 +9,7 @@ RainbowNeko reader.
 - [Architecture and the 500 GB disk plan](architecture.md)
 - [Unified format and field contract](format.md)
 - [Build, publish, and train operations](operations.md)
+- [Labeled image datasets and grouped shards](labeled.md)
 
 ## Principles
 

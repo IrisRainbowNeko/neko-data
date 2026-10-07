@@ -86,3 +86,51 @@ class RainbowWebDatasetImageSource(RainbowWebDatasetSource):
             open_dataset(manifest_uri, runtime=context, **kwargs),
             repeat=repeat,
         )
+
+
+class RainbowLabeledImageSource(RainbowWebDatasetSource):
+    """Image + integer label source for classification/contrastive training.
+
+    Yields ``{"id", "image": PIL.Image, "label"}``.  Combine with a grouped
+    build (``group_key``) and ``group_key``/``group_shuffle`` here so that
+    RainbowNeko's streaming ``PosNegBucket``/``CategoryBucket`` receive
+    several samples of the same class within their buffers.
+    """
+
+    def __iter__(self):
+        for data in self.dataset:
+            yield {"id": data["id"], "image": Image.open(BytesIO(data["image"])), "label": data["label"]}
+
+    def get_image_size(self, data: dict[str, Any]) -> tuple[int, int]:
+        return data["image"].size
+
+    @property
+    def num_classes(self) -> int | None:
+        value = self.dataset.manifest.metadata.get("num_classes")
+        return int(value) if value is not None else None
+
+    @classmethod
+    def from_manifest(
+        cls,
+        manifest_uri: str | Path,
+        runtime: RuntimeContext | None = None,
+        *,
+        repeat: int = 1,
+        label_key: str = "label",
+        group_key: str | None = "label",
+        group_shuffle: int = 2048,
+        endpoint_url: str | None = None,
+        region_name: str = "auto",
+        **kwargs,
+    ) -> "RainbowLabeledImageSource":
+        kwargs.update({
+            "output_mode": "image_label",
+            "include_metadata": False,
+            "label_key": label_key,
+            "group_key": group_key,
+            "group_shuffle": group_shuffle,
+        })
+        if endpoint_url is not None and "storage" not in kwargs:
+            kwargs["storage"] = S3Storage(endpoint_url=endpoint_url, region_name=region_name)
+        context = runtime or RuntimeContext.from_env()
+        return cls(open_dataset(manifest_uri, runtime=context, **kwargs), repeat=repeat)

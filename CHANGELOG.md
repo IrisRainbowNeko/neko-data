@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.0 - 2026-10-07
+
+- Add `group_key` grouped builds: shards roll over only at group boundaries.
+- Support several splits in one dataset directory (per-split journals, summaries,
+  and indexes; the manifest keeps other splits).
+- Add group-level runtime shuffle (`group_key`, `group_shuffle`, `group_chunk_size`),
+  `output_mode="image_label"`, and `RainbowLabeledImageSource` for CCIP-style training.
+- Add the `python` YAML source type (`factory: module:function`).
+
 ## 0.2.0 - 2026-07-27
 
 - Add resumable, checksum-verified mirroring for prebuilt Hub WebDataset shards.

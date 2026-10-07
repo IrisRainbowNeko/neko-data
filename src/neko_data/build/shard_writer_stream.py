@@ -47,6 +47,7 @@ class StreamingWebDatasetShardWriter:
         start_index: int = 0,
         overwrite: bool = False,
         on_shard: Callable[[ShardRecord, Path, Path | None], None] | None = None,
+        group_key: str | None = None,
     ) -> None:
         self.output_dir = Path(output_dir)
         self.metadata_dir = Path(metadata_dir)
@@ -57,6 +58,8 @@ class StreamingWebDatasetShardWriter:
         self.next_index = start_index
         self.overwrite = overwrite
         self.on_shard = on_shard
+        self.group_key = group_key
+        self._group: object = None
         self.records: list[ShardRecord] = []
         self._tar: tarfile.TarFile | None = None
         self._temporary: Path | None = None
@@ -96,7 +99,14 @@ class StreamingWebDatasetShardWriter:
         json_data = sample.metadata_json()
         text_data = (sample.caption + "\n").encode("utf-8") if sample.caption else None
         estimated = sum(len(data) + 1024 for data in (sample.image, json_data, text_data or b""))
-        if self._tar is not None and self._count and (
+        group = None
+        if self.group_key is not None:
+            if self.group_key not in sample.metadata:
+                raise ValueError(f"Sample {sample.sample_key!r} has no group metadata {self.group_key!r}")
+            group = sample.metadata[self.group_key]
+        # With a group key, shards only roll over between groups so a group is never split.
+        same_group = self.group_key is not None and self._count > 0 and group == self._group
+        if self._tar is not None and self._count and not same_group and (
             self._size + estimated > self.max_shard_size
             or (self.max_samples_per_shard > 0 and self._count >= self.max_samples_per_shard)
         ):
@@ -116,6 +126,7 @@ class StreamingWebDatasetShardWriter:
         self._count += 1
         self._rows.append(metadata_row(sample, self._name))
         self._source_ids.add(sample.source_id)
+        self._group = group
 
     def close_current(self) -> ShardRecord | None:
         if self._tar is None:

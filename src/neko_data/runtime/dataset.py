@@ -44,11 +44,58 @@ def _shuffle_stream(items: Iterable, buffer_size: int, rng: random.Random) -> It
             close()
 
 
+def _group_runs(samples: Iterable, group_key: str, chunk_size: int = 0) -> Iterator[list]:
+    """Collect consecutive samples sharing ``metadata[group_key]`` into lists.
+
+    Builds written with the same ``group_key`` never split a group across
+    shards, so consecutive runs are complete groups.  ``chunk_size`` caps a
+    run so that very large groups become several independently shuffled units.
+    """
+    iterator = iter(samples)
+    marker = object()
+    current: list = []
+    current_group = marker
+    try:
+        for sample in iterator:
+            group = sample.metadata.get(group_key, marker)
+            if current and (group != current_group or group is marker
+                            or (chunk_size > 0 and len(current) >= chunk_size)):
+                yield current
+                current = []
+            current.append(sample)
+            current_group = group
+        if current:
+            yield current
+    finally:
+        close = getattr(iterator, "close", None)
+        if close is not None:
+            close()
+
+
+def _flatten_groups(groups: Iterable[list], rng: random.Random | None) -> Iterator:
+    iterator = iter(groups)
+    try:
+        for group in iterator:
+            if rng is not None:
+                rng.shuffle(group)
+            yield from group
+    finally:
+        close = getattr(iterator, "close", None)
+        if close is not None:
+            close()
+
+
 class DatasetView(IterableDataset):
     """A deterministic, cache-backed training dataset.
 
     It yields the structure expected by RainbowNeko and HCP-Diffusion:
     ``id``, raw image bytes, a prompt mapping, and complete metadata.
+
+    ``output_mode="image_label"`` yields ``id``, raw image bytes and
+    ``metadata[label_key]`` as ``label``.  When ``group_key`` is set, samples
+    are shuffled per group (for example one character class) instead of per
+    sample, so members of a group are emitted consecutively.  This keeps
+    class-balanced buckets fed in streaming mode.
     """
 
     def __init__(
@@ -71,6 +118,11 @@ class DatasetView(IterableDataset):
         prompt_template: str | Sequence[str] | None = None,
         include_metadata: bool = True,
         output_mode: str = "text_image",
+        label_key: str = "label",
+        group_key: str | None = None,
+        group_shuffle: int = 0,
+        group_chunk_size: int = 0,
+        shuffle_within_group: bool = True,
     ) -> None:
         self.loaded = loaded
         self.manifest = loaded.manifest
@@ -109,9 +161,16 @@ class DatasetView(IterableDataset):
             ]
         self.prompt_template = prompt_template
         self.include_metadata = include_metadata
-        if output_mode not in {"text_image", "image"}:
-            raise ValueError("output_mode must be text_image or image")
+        if output_mode not in {"text_image", "image", "image_label"}:
+            raise ValueError("output_mode must be text_image, image or image_label")
+        if group_key is not None and sample_shuffle > 1:
+            raise ValueError("sample_shuffle breaks group order; use group_shuffle with group_key")
         self.output_mode = output_mode
+        self.label_key = label_key
+        self.group_key = group_key
+        self.group_shuffle = group_shuffle
+        self.group_chunk_size = group_chunk_size
+        self.shuffle_within_group = shuffle_within_group
         self.epoch = 0
         self.planner = ShardPlanner(self.manifest.for_split(split), seed=seed)
 
@@ -147,11 +206,23 @@ class DatasetView(IterableDataset):
         samples = None
         try:
             samples = self._raw_samples(shards, prefetcher)
-            samples = _shuffle_stream(samples, self.sample_shuffle, random.Random(self.seed + self.epoch))
+            shuffle_rng = random.Random(self.seed + self.epoch)
+            if self.group_key is not None:
+                groups = _group_runs(samples, self.group_key, self.group_chunk_size)
+                groups = _shuffle_stream(groups, self.group_shuffle, shuffle_rng)
+                samples = _flatten_groups(groups, shuffle_rng if self.shuffle_within_group else None)
+            else:
+                samples = _shuffle_stream(samples, self.sample_shuffle, shuffle_rng)
             rng = random.Random(self.seed + self.epoch)
             for sample in samples:
                 if self.output_mode == "image":
                     yield {"id": sample.sample_key, "image": sample.image}
+                    continue
+                if self.output_mode == "image_label":
+                    if self.label_key not in sample.metadata:
+                        raise KeyError(f"Sample {sample.sample_key!r} has no label field {self.label_key!r}")
+                    yield {"id": sample.sample_key, "image": sample.image,
+                           "label": sample.metadata[self.label_key]}
                     continue
                 yield sample.to_training_dict(
                     caption_key=self.caption_key,
