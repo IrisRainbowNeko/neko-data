@@ -36,6 +36,13 @@ neko-data build --config examples/build/hf_webdataset.yaml
 使用 boto3 的环境变量或 profile 配置，不把凭证写进代码和 manifest。`delete_after_upload: true`
 会在每个 shard 上传成功后删除构建机上的 tar，适合 500G 磁盘。
 
+本地图片目录（例如 LSDIR）可使用
+[`examples/build/local_images.yaml`](examples/build/local_images.yaml)，设置
+`source.type: local_images` 和 `source.root`。图片保留原始字节和格式，不重新编码；相对路径
+去掉末尾扩展名作为 sample key，原路径保存在 `relative_path` 元数据中，不根据目录名推断
+标签，也不生成 caption。遍历顺序固定，支持 resume；构建及远端校验完成前不要修改源目录。
+重复 key 会在输出样本前报错。建议设置 `skip_invalid_samples: false`，避免静默丢弃数据。
+
 ## 原样镜像已有 WebDataset
 
 已有合适 tar shard 的 Hub 数据集使用 `neko-data mirror --config mirror.yaml`，无需逐样本
@@ -89,4 +96,3 @@ source = RainbowTextImageSource.from_manifest(
 
 带标签（类别/角色）数据集、分组分片、多 split 构建和 `RainbowLabeledImageSource`，
 见 [docs/zh_CN/labeled.md](docs/zh_CN/labeled.md)。
-

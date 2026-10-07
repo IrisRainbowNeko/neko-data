@@ -1,0 +1,17 @@
+dataset:
+  dataset_id: LSDIR
+  version: v1
+  split: train
+  output_dir: ./lsdir-wds
+source:
+  type: local_images
+  root: ./LSDIR
+  source_id: LSDIR
+build:
+  max_shard_size: 1GiB
+  resume: true
+  skip_invalid_samples: false
+# Optional: configure boto3 credentials and R2_ENDPOINT in the environment.
+# publish:
+#   destination: s3://bucket/datasets/LSDIR/v1
+#   delete_after_upload: false

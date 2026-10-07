@@ -15,6 +15,7 @@ from .publisher import DatasetPublisher
 from .shard_writer_stream import StreamingWebDatasetShardWriter
 from .source_hf_dataset import HFDatasetsSource
 from .source_hf_webdataset import HFWebDatasetSource
+from .source_local_images import LocalImagesSource
 from .source_url_parquet import URLParquetSource
 
 
@@ -64,6 +65,10 @@ class BuildJob:
             source = HFDatasetsSource(metadata_provider=provider, **{
                 key: value for key, value in source_config.items() if key != "type"
             })
+        elif source_type == "local_images":
+            options = {key: value for key, value in source_config.items() if key != "type"}
+            options.setdefault("split", str(dataset.get("split", "train")))
+            source = LocalImagesSource(**options)
         elif source_type == "python":
             options = {key: value for key, value in source_config.items() if key != "type"}
             factory = options.pop("factory", None)

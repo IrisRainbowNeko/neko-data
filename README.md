@@ -40,6 +40,16 @@ Use `publish.destination: s3://bucket/prefix` with an R2 endpoint configured
 through the normal boto3 environment variables. `delete_after_upload: true`
 lets a build host upload each finalized shard and release its local copy.
 
+For a local image directory such as LSDIR, use
+[`examples/build/local_images.yaml`](examples/build/local_images.yaml) with
+`source.type: local_images` and `source.root` pointing at the image tree.
+Images retain their original bytes and format. Relative paths without the final
+extension become sample keys; the original path is retained as `relative_path`
+metadata. Directory names do not become labels, and captions are not invented.
+Traversal is sorted for resume; keep the source tree unchanged until the build
+and remote verification finish. Duplicate keys fail before any samples are
+emitted. Set `skip_invalid_samples: false` to prevent silent data loss.
+
 ## Mirror prebuilt shards
 
 Use `neko-data mirror --config mirror.yaml` to copy existing Hub WebDataset tar
@@ -81,4 +91,3 @@ grouped shards, multi-split builds and `RainbowLabeledImageSource`.
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE).
-

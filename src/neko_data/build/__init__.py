@@ -6,6 +6,7 @@ from .shard_writer import WebDatasetShardWriter
 from .shard_writer_stream import StreamingWebDatasetShardWriter
 from .source_hf_dataset import HFDatasetsSource
 from .source_hf_webdataset import HFWebDatasetSource
+from .source_local_images import LocalImagesSource
 from .source_url_pack import URLPackAcquirer, URLPackConfig, URLPackResult, acquire_url_pack_block
 from .source_url_parquet import URLParquetSource, URLSampleRejected, URLSourceError
 
@@ -14,6 +15,7 @@ __all__ = [
     "DuckDBMetadataProvider",
     "HFDatasetsSource",
     "HFWebDatasetSource",
+    "LocalImagesSource",
     "URLParquetSource",
     "URLSampleRejected",
     "URLSourceError",
