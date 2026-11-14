@@ -5,16 +5,22 @@ from __future__ import annotations
 import fnmatch
 import hashlib
 import inspect
+import json
 import logging
 import os
+import shutil
 import tarfile
+import tempfile
 import time
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO, Iterable, Iterator
 
+from ..contract.blobs import BLOB_SAMPLE_FORMAT, BlobSampleReference
 from ..contract.records import NormalizedSample
+from ..contract.sample_metadata import MAX_SAMPLE_METADATA_BYTES
+from ..contract.typed import TYPED_EXTENSION, TYPED_SAMPLE_FORMAT, TypedSample, decode_typed_tree
 from .normalize import IMAGE_EXTENSIONS, sample_from_wds_parts
 
 LOGGER = logging.getLogger(__name__)
@@ -60,6 +66,17 @@ class TarSampleParts:
     image: bytes | None = None
     text: bytes | None = None
     json_data: bytes | None = None
+    typed_data: bytes | None = None
+    blob_seen: bool = False
+    oversized_json: BinaryIO | None = None
+
+
+def _completed_parts(parts):
+    try:
+        yield parts
+    finally:
+        if parts.oversized_json is not None:
+            parts.oversized_json.close()
 
 
 def iter_tar_parts(fileobj: BinaryIO) -> Iterator[TarSampleParts]:
@@ -70,7 +87,7 @@ def iter_tar_parts(fileobj: BinaryIO) -> Iterator[TarSampleParts]:
     them or retaining an unbounded dictionary of open samples.
     """
     current: TarSampleParts | None = None
-    with tarfile.open(fileobj=fileobj, mode="r|*") as archive:
+    with ExitStack() as cleanup, tarfile.open(fileobj=fileobj, mode="r|*") as archive:
         for member in archive:
             if not member.isfile():
                 continue
@@ -79,7 +96,7 @@ def iter_tar_parts(fileobj: BinaryIO) -> Iterator[TarSampleParts]:
                 continue
             key = sample_key(member.name)
             if current is not None and key != current.key:
-                yield current
+                yield from _completed_parts(current)
                 current = None
             if current is None:
                 current = TarSampleParts(key=key)
@@ -88,10 +105,32 @@ def iter_tar_parts(fileobj: BinaryIO) -> Iterator[TarSampleParts]:
                 (suffix in IMAGE_EXTENSIONS and current.image is not None)
                 or (suffix == "txt" and current.text is not None)
                 or (suffix == "json" and current.json_data is not None)
+                or (suffix == TYPED_EXTENSION and current.typed_data is not None)
             )
             if duplicate_part:
-                yield current
+                yield from _completed_parts(current)
                 current = TarSampleParts(key=key)
+            if suffix not in IMAGE_EXTENSIONS and suffix not in {"txt", "json", TYPED_EXTENSION}:
+                if suffix.startswith("nblob"):
+                    current.blob_seen = True
+                continue
+            if suffix == TYPED_EXTENSION and member.size > 1024**3 + 1024**2:
+                raise ValueError("Typed tar member exceeds maximum payload size")
+            if suffix == "json" and member.size > MAX_SAMPLE_METADATA_BYTES:
+                if current.typed_data is not None or current.blob_seen:
+                    raise ValueError("Versioned sample metadata exceeds maximum descriptor size")
+                # JSON may precede a legacy image or a versioned blob. Defer
+                # this distinction without allocating an unbounded descriptor.
+                # The final consumer may load it only for legacy image data.
+                current.json_data = b""
+                current.oversized_json = cleanup.enter_context(tempfile.TemporaryFile())
+                try:
+                    shutil.copyfileobj(extracted, current.oversized_json, length=8 * 1024**2)
+                    current.oversized_json.seek(0)
+                except BaseException:
+                    current.oversized_json.close()
+                    raise
+                continue
             data = extracted.read()
             if suffix in IMAGE_EXTENSIONS and current.image is None:
                 current.image_name = member.name
@@ -100,8 +139,10 @@ def iter_tar_parts(fileobj: BinaryIO) -> Iterator[TarSampleParts]:
                 current.text = data
             elif suffix == "json" and current.json_data is None:
                 current.json_data = data
-    if current is not None:
-        yield current
+            elif suffix == TYPED_EXTENSION:
+                current.typed_data = data
+        if current is not None:
+            yield from _completed_parts(current)
 
 
 def normalized_samples_from_tar(
@@ -111,9 +152,51 @@ def normalized_samples_from_tar(
     source_id: str,
     metadata_provider=None,
     caption_keys: Iterable[str] | None = None,
-) -> Iterator[NormalizedSample]:
+) -> Iterator[NormalizedSample | TypedSample | BlobSampleReference]:
     for parts in iter_tar_parts(fileobj):
+        if parts.oversized_json is not None:
+            if parts.typed_data is not None or parts.blob_seen:
+                raise ValueError("Versioned sample metadata exceeds maximum descriptor size")
+            if parts.image is None:
+                continue  # retain legacy orphan-JSON skipping without reading it
+            parts.json_data = parts.oversized_json.read()  # legacy image metadata remains compatible
+        if parts.blob_seen and (parts.typed_data is not None or parts.image is not None):
+            raise ValueError("Blob samples cannot contain typed or image members")
+        if parts.typed_data is not None:
+            if parts.image is not None or parts.json_data is None:
+                raise ValueError("Typed samples require JSON metadata and cannot contain an image")
+            metadata = json.loads(parts.json_data)
+            if (metadata.get("sample_format") != TYPED_SAMPLE_FORMAT
+                    or metadata.get("sample_key") != parts.key
+                    or metadata.get("payload_extension") != TYPED_EXTENSION):
+                raise ValueError("Invalid typed sample metadata")
+            if hashlib.sha256(parts.typed_data).hexdigest() != metadata.get("payload_sha256"):
+                raise ValueError("Typed sample payload checksum mismatch")
+            yield TypedSample(parts.key, decode_typed_tree(parts.typed_data),
+                              split=metadata.pop("split", split), source_id=metadata.pop("source_id", source_id),
+                              metadata=metadata)
+            continue
         if parts.image is None or parts.image_name is None:
+            if parts.json_data is not None:
+                try:
+                    metadata = json.loads(parts.json_data)
+                except json.JSONDecodeError:
+                    if parts.blob_seen:
+                        raise ValueError("Invalid blob metadata JSON") from None
+                    continue  # legacy orphan non-image records are skipped
+                if not isinstance(metadata, dict):
+                    if parts.blob_seen:
+                        raise ValueError("Blob metadata must be a JSON object")
+                    continue
+                if metadata.get("sample_format") == BLOB_SAMPLE_FORMAT:
+                    if metadata.get("sample_key") != parts.key:
+                        raise ValueError("Blob sample key mismatch")
+                    yield BlobSampleReference(parts.key, metadata["blobs"], metadata.get("split", split),
+                                              metadata.get("source_id", source_id), metadata)
+                elif parts.blob_seen:
+                    raise ValueError("Blob payload has no versioned blob metadata")
+            elif parts.blob_seen:
+                raise ValueError("Blob payload is missing JSON metadata")
             continue
         joined = metadata_provider.lookup(parts.key) if metadata_provider is not None else None
         yield sample_from_wds_parts(

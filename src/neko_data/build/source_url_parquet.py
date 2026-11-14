@@ -23,6 +23,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from PIL import Image
+
 from neko_data.build.normalize import json_safe
 from neko_data.contract.records import NormalizedSample
 from neko_data.storage import S3Storage
@@ -198,7 +199,8 @@ class URLParquetSource(Iterable[NormalizedSample]):
                         raise URLSampleRejected("aspect_ratio", f"{width}x{height}")
                     if width * height > self.max_pixels:
                         raise URLSampleRejected("max_pixels", f"{width}x{height}")
-                    extension = {"jpeg": "jpg", "tiff": "tif"}.get((opened.format or "jpg").lower(), (opened.format or "jpg").lower())
+                    source_extension = (opened.format or "jpg").lower()
+                    extension = {"jpeg": "jpg", "tiff": "tif"}.get(source_extension, source_extension)
                     opened.verify()
                 with Image.open(io.BytesIO(image)) as verified:
                     verified.load()
@@ -209,7 +211,8 @@ class URLParquetSource(Iterable[NormalizedSample]):
         caption = row.get(self.caption_column) if self.caption_column else None
         caption = caption.strip() if isinstance(caption, str) and caption.strip() else None
         if self.metadata_columns is None:
-            metadata = {name: value for name, value in row.items() if name not in {self.key_column, self.url_column, self.caption_column}}
+            excluded = {self.key_column, self.url_column, self.caption_column}
+            metadata = {name: value for name, value in row.items() if name not in excluded}
         else:
             metadata = {name: row.get(name) for name in self.metadata_columns if name in row}
         metadata["url"] = url

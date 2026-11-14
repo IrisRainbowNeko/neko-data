@@ -19,6 +19,9 @@ source dataset. During training, only assigned shards are cached locally.
 See [README_zh-CN.md](README_zh-CN.md) for the Chinese guide and
 [docs/zh_CN/index.md](docs/zh_CN/index.md) for the detailed data layout.
 
+Non-image workloads can use [safe tensor trees and streamed model artifacts](docs/en/typed_blobs.md)
+through the same manifest, publisher and node-local cache.
+
 ## Install
 
 ```bash

@@ -1,5 +1,8 @@
 # neko-data
 
+张量轨迹与大模型文件也可复用现有 manifest、R2 发布和节点缓存：
+参见 [安全张量树与流式模型文件](docs/en/typed_blobs.md)。
+
 `neko-data` 是一个独立的数据层，用于把大规模图文数据稳定地接入扩散模型训练：
 
 ```text

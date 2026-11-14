@@ -15,7 +15,10 @@ except ImportError:
     def get_worker_info():
         return None
 
+from ..contract.blobs import BlobSampleReference
 from ..contract.schema import ShardRecord
+from ..contract.typed import TypedSample
+from .blobs import LocatedBlobSample, acquire_blob, acquire_blobs, locate_blob
 from .cache import DiskShardCache
 from .manifest_loader import LoadedManifest, ManifestLoader
 from .planner import RuntimeContext, ShardPlanner
@@ -123,6 +126,9 @@ class DatasetView(IterableDataset):
         group_shuffle: int = 0,
         group_chunk_size: int = 0,
         shuffle_within_group: bool = True,
+        blob_cache_root: str | Path | None = None,
+        blob_cache_max_size_bytes: int = 100 * 1024**3,
+        blob_cache_evict_size_bytes: int = 80 * 1024**3,
     ) -> None:
         self.loaded = loaded
         self.manifest = loaded.manifest
@@ -149,6 +155,9 @@ class DatasetView(IterableDataset):
                 strategy=cache_strategy,
             )
         self.seed = seed
+        self.blob_cache_root = Path(blob_cache_root) if blob_cache_root is not None else self.cache.root / "blobs"
+        self.blob_cache_max_size_bytes = blob_cache_max_size_bytes
+        self.blob_cache_evict_size_bytes = blob_cache_evict_size_bytes
         self.sample_shuffle = sample_shuffle
         self.prefetch_workers = prefetch_workers
         self.prefetch_shards = prefetch_shards
@@ -161,8 +170,8 @@ class DatasetView(IterableDataset):
             ]
         self.prompt_template = prompt_template
         self.include_metadata = include_metadata
-        if output_mode not in {"text_image", "image", "image_label"}:
-            raise ValueError("output_mode must be text_image, image or image_label")
+        if output_mode not in {"text_image", "image", "image_label", "typed", "blob"}:
+            raise ValueError("output_mode must be text_image, image, image_label, typed or blob")
         if group_key is not None and sample_shuffle > 1:
             raise ValueError("sample_shuffle breaks group order; use group_shuffle with group_key")
         self.output_mode = output_mode
@@ -194,7 +203,11 @@ class DatasetView(IterableDataset):
                 if prefetcher is not None:
                     prefetcher.schedule(self.loaded.shard_uri(future_shard), future_shard)
             with self.cache.open(uri, shard) as file_or_path:
-                yield from iter_shard_samples(file_or_path, split=self.split, source_id=uri)
+                for sample in iter_shard_samples(file_or_path, split=self.split, source_id=uri):
+                    if isinstance(sample, BlobSampleReference):
+                        yield LocatedBlobSample(sample, uri, shard)
+                    else:
+                        yield sample
 
     def __iter__(self) -> Iterator[dict]:
         context = self._worker_context(self.runtime)
@@ -215,6 +228,24 @@ class DatasetView(IterableDataset):
                 samples = _shuffle_stream(samples, self.sample_shuffle, shuffle_rng)
             rng = random.Random(self.seed + self.epoch)
             for sample in samples:
+                if self.output_mode == "blob":
+                    if not isinstance(sample, LocatedBlobSample):
+                        raise TypeError("output_mode='blob' requires blob samples")
+                    row = {"id": sample.sample.sample_key, "files": dict(sample.sample.files),
+                           "_blob_reference": sample}
+                    if self.include_metadata:
+                        row["metadata"] = dict(sample.sample.metadata)
+                    yield row
+                    continue
+                if isinstance(sample, LocatedBlobSample):
+                    raise TypeError("Blob samples require output_mode='blob'")
+                if self.output_mode == "typed":
+                    if not isinstance(sample, TypedSample):
+                        raise TypeError("output_mode='typed' requires typed samples")
+                    yield sample.to_training_dict(include_metadata=self.include_metadata)
+                    continue
+                if isinstance(sample, TypedSample):
+                    raise TypeError("Typed samples require output_mode='typed'")
                 if self.output_mode == "image":
                     yield {"id": sample.sample_key, "image": sample.image}
                     continue
@@ -247,6 +278,15 @@ class DatasetView(IterableDataset):
         from PIL import Image
         with Image.open(io.BytesIO(data["image"])) as image:
             return image.size
+
+    def acquire_blob(self, row: dict, field: str):
+        return acquire_blob(self, row, field)
+
+    def acquire_blobs(self, row: dict, fields=None):
+        return acquire_blobs(self, row, fields)
+
+    def locate_blob(self, sample_key: str, shard: ShardRecord | str) -> dict:
+        return locate_blob(self, sample_key, shard)
 
 
 def open_dataset(

@@ -7,7 +7,9 @@ import re
 from pathlib import Path
 from typing import Any, Mapping, Protocol
 
+from ..contract.blobs import BlobSample
 from ..contract.records import NormalizedSample, json_dumps
+from ..contract.typed import TypedSample
 
 _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -72,8 +74,23 @@ class DuckDBMetadataProvider:
         self._connection_pid = None
 
 
-def metadata_row(sample: NormalizedSample, shard_path: str) -> dict[str, Any]:
+def metadata_row(sample: NormalizedSample | TypedSample | BlobSample, shard_path: str,
+                 *, payload_metadata=None) -> dict[str, Any]:
     """Flatten stable fields while retaining arbitrary metadata as JSON."""
+    if isinstance(sample, (TypedSample, BlobSample)):
+        if payload_metadata is None:
+            payload_metadata = (sample.prepare()[1] if isinstance(sample, BlobSample)
+                                else sample.metadata_payload(sample.encode()))
+        row = {"sample_key": sample.sample_key, "source_id": sample.source_id, "split": sample.split,
+               "shard_path": shard_path, "sample_format": payload_metadata["sample_format"],
+               "payload_sha256": payload_metadata.get("payload_sha256"),
+               "metadata_json": json_dumps(dict(sample.metadata))}
+        if isinstance(sample, BlobSample):
+            row["blobs_json"] = json_dumps(payload_metadata["blobs"])
+        for key, value in sample.metadata.items():
+            if isinstance(value, (str, int, float, bool)) or value is None:
+                row.setdefault(key, value)
+        return row
     row: dict[str, Any] = {
         "sample_key": sample.sample_key,
         "source_id": sample.source_id,

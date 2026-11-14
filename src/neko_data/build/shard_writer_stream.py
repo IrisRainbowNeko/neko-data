@@ -9,10 +9,13 @@ import tarfile
 from pathlib import Path, PurePosixPath
 from typing import Callable
 
+from ..contract.blobs import BlobSample
 from ..contract.records import NormalizedSample
 from ..contract.schema import ShardRecord
+from ..contract.typed import TypedSample
 from .metadata import metadata_row
 from .metadata_rows import write_parquet_rows
+from .sample_io import sample_members, write_member
 from .shard_writer import parse_size
 
 
@@ -95,10 +98,11 @@ class StreamingWebDatasetShardWriter:
         info.mode = 0o644
         return info, io.BytesIO(data)
 
-    def add(self, sample: NormalizedSample) -> None:
-        json_data = sample.metadata_json()
-        text_data = (sample.caption + "\n").encode("utf-8") if sample.caption else None
-        estimated = sum(len(data) + 1024 for data in (sample.image, json_data, text_data or b""))
+    def add(self, sample: NormalizedSample | TypedSample | BlobSample) -> None:
+        members, payload_metadata = sample_members(sample)
+        estimated = sum(len(data) + 1024 for _, data in members)
+        if isinstance(sample, NormalizedSample) and not sample.caption:
+            estimated += 1024  # retain legacy image shard rollover estimates
         group = None
         if self.group_key is not None:
             if self.group_key not in sample.metadata:
@@ -114,17 +118,11 @@ class StreamingWebDatasetShardWriter:
         if self._tar is None:
             self._open()
         assert self._tar is not None and self._name is not None
-        entries = [
-            self._entry(_member_name(sample.sample_key, sample.image_extension), sample.image),
-            self._entry(_member_name(sample.sample_key, "json"), json_data),
-        ]
-        if text_data is not None:
-            entries.append(self._entry(_member_name(sample.sample_key, "txt"), text_data))
-        for info, content in entries:
-            self._tar.addfile(info, content)
+        for extension, data in members:
+            write_member(self._tar, _member_name(sample.sample_key, extension), data)
         self._size += estimated
         self._count += 1
-        self._rows.append(metadata_row(sample, self._name))
+        self._rows.append(metadata_row(sample, self._name, payload_metadata=payload_metadata))
         self._source_ids.add(sample.source_id)
         self._group = group
 

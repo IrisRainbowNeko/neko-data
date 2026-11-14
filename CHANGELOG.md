@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Add pickle-free typed tensor/tree samples with NumPy dtype/shape preservation,
+  optional CPU PyTorch conversion and lossless bfloat16 storage.
+- Stream large named model files into tar and acquire checksum-verified, pinned
+  local files or HF-style directories through the existing shard cache.
+- Add manifest-shard/key blob lookup without enumerating old snapshots.
+- Query Windows lease-owner liveness without sending console control signals.
+
 ## 0.3.0 - 2026-10-07
 
 - Add `group_key` grouped builds: shards roll over only at group boundaries.

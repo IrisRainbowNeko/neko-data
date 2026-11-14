@@ -1,0 +1,13 @@
+dataset:
+  dataset_id: synthetic-trajectories
+  version: v1
+  output_dir: ./dataset/synthetic-trajectories
+source:
+  type: python
+  factory: examples.typed.synthetic_trajectory:source
+  kwargs:
+    episodes: 4
+build:
+  max_shard_size: 16MiB
+  max_samples_per_shard: 2
+  skip_invalid_samples: false

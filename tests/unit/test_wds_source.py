@@ -63,8 +63,8 @@ def test_hf_webdataset_source_can_namespace_keys_by_upstream_shard(
     assert all(sample.sample_key.endswith("/42") for sample in samples)
     assert [sample.metadata["raw_sample_key"] for sample in samples] == ["42", "42"]
     assert {sample.metadata["upstream_shard"] for sample in samples} == {
-        str(first_tar),
-        str(second_tar),
+        first_tar.as_posix(),
+        second_tar.as_posix(),
     }
 
 
@@ -154,8 +154,8 @@ def test_hf_webdataset_source_namespaces_keys_after_metadata_join(sample_image_b
     assert all(sample.sample_key.endswith("/42") for sample in samples)
     assert {sample.metadata["raw_sample_key"] for sample in samples} == {"42"}
     assert {sample.metadata["upstream_shard"] for sample in samples} == {
-        str(first_tar),
-        str(second_tar),
+        first_tar.as_posix(),
+        second_tar.as_posix(),
     }
     assert [sample.sample_key for sample in source] == [sample.sample_key for sample in samples]
 

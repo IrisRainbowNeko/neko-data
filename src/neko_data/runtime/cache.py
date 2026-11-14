@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import socket
 import time
@@ -77,15 +78,50 @@ class DiskShardCache:
     def _verified_marker(self, path: Path) -> Path:
         return path.with_name(f".{path.name}.verified")
 
-    def _write_verified_marker(self, path: Path, digest: str) -> None:
-        """Write a marker whose mtime is never older than the cache object."""
+    @staticmethod
+    def _fingerprint(path: Path) -> dict[str, int] | None:
+        stat = path.stat()
+        result = {"size": stat.st_size, "mtime_ns": stat.st_mtime_ns,
+                  "ctime_ns": stat.st_ctime_ns, "inode": stat.st_ino, "device": stat.st_dev}
+        if os.name == "nt":
+            # Windows st_ctime is creation time on older Python releases.
+            # ChangeTime also detects same-size writes whose mtime is restored.
+            import ctypes
+            from ctypes import wintypes
+
+            class FileBasicInfo(ctypes.Structure):
+                _fields_ = [(name, ctypes.c_longlong) for name in
+                            ("creation", "access", "write", "change")] + [("attributes", wintypes.DWORD)]
+
+            kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel.CreateFileW.argtypes = (wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                                          wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE)
+            kernel.CreateFileW.restype = wintypes.HANDLE
+            kernel.GetFileInformationByHandleEx.argtypes = (wintypes.HANDLE, ctypes.c_int,
+                                                           wintypes.LPVOID, wintypes.DWORD)
+            kernel.GetFileInformationByHandleEx.restype = wintypes.BOOL
+            kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
+            kernel.CloseHandle.restype = wintypes.BOOL
+            handle = kernel.CreateFileW(str(path), 0x80, 7, None, 3, 0, None)  # READ_ATTRIBUTES; shared R/W/delete
+            if handle == ctypes.c_void_p(-1).value:
+                return None  # no timestamp shortcut when the query is unavailable
+            try:
+                info = FileBasicInfo()
+                if not kernel.GetFileInformationByHandleEx(handle, 0, ctypes.byref(info), ctypes.sizeof(info)):
+                    return None
+                result["windows_change_time_100ns"] = info.change
+            finally:
+                kernel.CloseHandle(handle)
+        return result
+
+    def _write_verified_marker(self, path: Path, digest: str, *, fingerprint=None) -> None:
+        fingerprint = self._fingerprint(path) if fingerprint is None else fingerprint
         marker = self._verified_marker(path)
-        marker.write_text(digest + "\n", encoding="ascii")
-        # Some distributed filesystems can assign the marker an mtime a few
-        # nanoseconds before the object despite the write ordering. Aligning
-        # both timestamps keeps the marker check deterministic.
-        mtime_ns = path.stat().st_mtime_ns
-        os.utime(marker, ns=(mtime_ns, mtime_ns))
+        if fingerprint is None:
+            marker.unlink(missing_ok=True)
+            return
+        marker.write_text(json.dumps({"version": 2, "sha256": digest, "fingerprint": fingerprint},
+                                     sort_keys=True) + "\n", encoding="ascii")
 
     def _valid(self, path: Path, shard: ShardRecord | None) -> bool:
         if not path.exists() or not path.is_file():
@@ -96,17 +132,20 @@ class DiskShardCache:
         if shard is None or not shard.sha256:
             return True
         marker = self._verified_marker(path)
-        if (
-            marker.exists()
-            and marker.read_text(encoding="ascii").strip() == shard.sha256
-            # Allow the small timestamp skew seen on the shared filesystem;
-            # the marker is still keyed by the expected content digest.
-            and marker.stat().st_mtime_ns + 1_000_000 >= stat.st_mtime_ns
-        ):
-            return True
+        before = self._fingerprint(path)
+        if before is not None and marker.exists():
+            try:
+                saved = json.loads(marker.read_text(encoding="ascii"))
+            except (ValueError, UnicodeError):
+                saved = None  # old or damaged markers are rehashed, never trusted
+            if saved == {"version": 2, "sha256": shard.sha256, "fingerprint": before}:
+                return True
         if _file_sha256(path) != shard.sha256:
             return False
-        self._write_verified_marker(path, shard.sha256)
+        after = self._fingerprint(path)
+        if before != after:
+            return False  # changed while hashing; never bless a different file
+        self._write_verified_marker(path, shard.sha256, fingerprint=after)
         return True
 
     def _lease(self, path: Path) -> Path:
@@ -140,6 +179,28 @@ class DiskShardCache:
 
     @staticmethod
     def _pid_is_alive(pid: int) -> bool:
+        if os.name == "nt":
+            # signal 0 is CTRL_C_EVENT on Windows: os.kill(pid, 0) can
+            # interrupt the reader instead of performing an existence query.
+            import ctypes
+            from ctypes import wintypes
+
+            kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+            kernel.OpenProcess.restype = wintypes.HANDLE
+            kernel.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+            kernel.GetExitCodeProcess.restype = wintypes.BOOL
+            kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
+            kernel.CloseHandle.restype = wintypes.BOOL
+            handle = kernel.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+            if not handle:
+                # Access denied is not evidence that another process is dead.
+                return ctypes.get_last_error() != 87  # ERROR_INVALID_PARAMETER
+            try:
+                code = wintypes.DWORD()
+                return not kernel.GetExitCodeProcess(handle, ctypes.byref(code)) or code.value == 259
+            finally:
+                kernel.CloseHandle(handle)
         try:
             os.kill(pid, 0)
         except ProcessLookupError:
@@ -295,6 +356,10 @@ class DiskShardCache:
                     raise
             stat = path.stat()
             os.utime(path, (time.time(), stat.st_mtime))
+            if shard is not None and shard.sha256:
+                # Our LRU atime update changes ctime/Win32 ChangeTime too.
+                # Refresh only after the content passed _valid under this lock.
+                self._write_verified_marker(path, shard.sha256)
             lease = self._lease(path)
         try:
             yield path

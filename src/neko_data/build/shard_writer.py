@@ -10,9 +10,12 @@ import tarfile
 from pathlib import Path, PurePosixPath
 from typing import Callable
 
+from ..contract.blobs import BlobSample
 from ..contract.records import NormalizedSample
 from ..contract.schema import ShardRecord
+from ..contract.typed import TypedSample
 from .metadata import MetadataWriter, metadata_row
+from .sample_io import sample_members, write_member
 
 _SIZE_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*([kmgt]?i?b?|b)?\s*$", re.IGNORECASE)
 
@@ -105,10 +108,11 @@ class WebDatasetShardWriter:
         info.size, info.mode = len(data), 0o644
         return info, io.BytesIO(data)
 
-    def add(self, sample: NormalizedSample) -> None:
-        json_data = sample.metadata_json()
-        text_data = (sample.caption + "\n").encode("utf-8") if sample.caption else None
-        estimated = sum(len(data) + 1024 for data in (sample.image, json_data, text_data or b""))
+    def add(self, sample: NormalizedSample | TypedSample | BlobSample) -> None:
+        members, payload_metadata = sample_members(sample)
+        estimated = sum(len(data) + 1024 for _, data in members)
+        if isinstance(sample, NormalizedSample) and not sample.caption:
+            estimated += 1024  # retain legacy image shard rollover estimates
         if self._tar is not None and self._sample_count > 0 and (
             self._estimated_size + estimated > self.max_shard_size
             or (self.max_samples_per_shard > 0 and self._sample_count >= self.max_samples_per_shard)
@@ -118,15 +122,11 @@ class WebDatasetShardWriter:
             self._open_next()
         assert self._tar is not None and self._current_name is not None
         key = sample.sample_key
-        entries = [self._entry(_member_name(key, sample.image_extension), sample.image),
-                   self._entry(_member_name(key, "json"), json_data)]
-        if text_data is not None:
-            entries.append(self._entry(_member_name(key, "txt"), text_data))
-        for info, data in entries:
-            self._tar.addfile(info, data)
+        for extension, data in members:
+            write_member(self._tar, _member_name(key, extension), data)
         self._estimated_size += estimated
         self._sample_count += 1
-        self._rows.append(metadata_row(sample, self._current_name))
+        self._rows.append(metadata_row(sample, self._current_name, payload_metadata=payload_metadata))
         self._source_ids.add(sample.source_id)
 
     def close_current(self) -> ShardRecord | None:
